@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, BarChart3, ChevronRight, CircleDollarSign, Gauge, LayoutDashboard,
   ListFilter, Menu, Pause, Play, RefreshCw, Settings, ShieldCheck, TrendingUp,
@@ -74,6 +74,13 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
+  // Keep polling from overwriting a value while the user is editing it.
+  const capitalEditedRef = useRef(false)
+
+  function handleCapitalChange(value: string) {
+    capitalEditedRef.current = true
+    setCapital(value)
+  }
 
   async function refresh() {
     try {
@@ -86,7 +93,7 @@ function App() {
       const incoming = Array.isArray(o.opportunities) ? o.opportunities : []
       setOpportunities(incoming)
       setLastUpdate(new Date())
-      if (s?.engine?.capital_usd) {
+      if (!capitalEditedRef.current && Number.isFinite(Number(s?.engine?.capital_usd)) && Number(s?.engine?.capital_usd) > 0) {
         setSavedCapital(Number(s.engine.capital_usd))
         setCapital(String(Number(s.engine.capital_usd)))
       }
@@ -113,6 +120,7 @@ function App() {
       if (!response.ok) throw new Error(data.detail || 'Ошибка сохранения')
       setSavedCapital(data.capital_usd)
       setCapital(String(data.capital_usd))
+      capitalEditedRef.current = false
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Не удалось сохранить сумму')
@@ -165,8 +173,8 @@ function App() {
 
       {error && <div className="error-banner"><Activity size={17}/>{error}<button onClick={() => setError('')}><X size={16}/></button></div>}
 
-      {page === 'home' && <HomePage best={best} opportunities={opportunities} avgNet={avgNet} status={status} capital={capital} setCapital={setCapital} saveCapital={saveCapital} loading={loading} toggleEngine={toggleEngine} savedCapital={savedCapital} lastUpdate={lastUpdate} open={setSelected} />}
-      {page === 'links' && <LinksPage opportunities={opportunities} open={setSelected} capital={savedCapital} />}
+      {page === 'home' && <HomePage best={best} opportunities={opportunities} avgNet={avgNet} status={status} capital={capital} setCapital={handleCapitalChange} saveCapital={saveCapital} loading={loading} toggleEngine={toggleEngine} savedCapital={savedCapital} lastUpdate={lastUpdate} open={setSelected} />}
+      {page === 'links' && <LinksPage opportunities={opportunities} open={setSelected} capital={savedCapital} status={status} />}
       {page === 'stats' && <StatsPage opportunities={opportunities} status={status} />}
       {page === 'trading' && <TradingPage status={status} toggleEngine={toggleEngine} loading={loading} />}
       {page === 'risk' && <RiskPage status={status} capital={savedCapital} />}
@@ -200,14 +208,14 @@ function HomePage({ best, opportunities, avgNet, status, capital, setCapital, sa
 
     <section className="panel links-panel">
       <div className="section-head"><div><span className="label">ТОП ВОЗМОЖНОСТИ</span><h2>Связки с чистым процентом</h2></div><button className="ghost-btn" onClick={() => open(best)} disabled={!best}>Открыть лучшую <ChevronRight size={16}/></button></div>
-      <OpportunityTable opportunities={opportunities.slice(0, 8)} open={open}/>
+      <OpportunityTable opportunities={opportunities.slice(0, 8)} open={open} engineRunning={Boolean(status?.engine?.running)}/>
       <div className="table-footer"><span>Последнее обновление: {lastUpdate ? lastUpdate.toLocaleTimeString() : '—'}</span><span>Используется: {fmtMoney(savedCapital)}</span></div>
     </section>
   </div>
 }
 
-function LinksPage({ opportunities, open, capital }: { opportunities: Opportunity[]; open: (x: Opportunity) => void; capital: number }) {
-  return <div className="content"><div className="page-intro"><div><span className="label">АРБИТРАЖНЫЕ СВЯЗКИ</span><h2>Монеты и чистая доходность</h2><p>Процент уже учитывает комиссии, проскальзывание и дополнительные расходы из backend.</p></div><div className="capital-pill">Бюджет <b>{fmtMoney(capital)}</b></div></div><div className="panel links-panel"><OpportunityTable opportunities={opportunities} open={open}/></div></div>
+function LinksPage({ opportunities, open, capital, status }: { opportunities: Opportunity[]; open: (x: Opportunity) => void; capital: number; status: Status | null }) {
+  return <div className="content"><div className="page-intro"><div><span className="label">АРБИТРАЖНЫЕ СВЯЗКИ</span><h2>Монеты и чистая доходность</h2><p>Процент уже учитывает комиссии, проскальзывание и дополнительные расходы из backend.</p></div><div className="capital-pill">Бюджет <b>{fmtMoney(capital)}</b></div></div><div className="panel links-panel"><OpportunityTable opportunities={opportunities} open={open} engineRunning={Boolean(status?.engine?.running)}/></div></div>
 }
 
 function StatsPage({ opportunities, status }: { opportunities: Opportunity[]; status: Status | null }) {
@@ -232,8 +240,8 @@ function SettingsPage({ status, capital, setCapital, saveCapital, loading }: any
 
 function Metric({ title, value, accent = false }: { title: string; value: string; accent?: boolean }) { return <div className="metric"><span>{title}</span><strong className={accent ? 'accent' : ''}>{value}</strong></div> }
 
-function OpportunityTable({ opportunities, open }: { opportunities: Opportunity[]; open: (x: Opportunity) => void }) {
-  if (!opportunities.length) return <div className="empty"><ListFilter size={22}/><div><b>Пока нет подходящих связок</b><span>Запусти backend и дождись актуальных стаканов.</span></div></div>
+function OpportunityTable({ opportunities, open, engineRunning }: { opportunities: Opportunity[]; open: (x: Opportunity) => void; engineRunning?: boolean }) {
+  if (!opportunities.length) return <div className="empty"><ListFilter size={22}/><div><b>{engineRunning ? 'Подходящих связок пока нет' : 'Мониторинг остановлен'}</b><span>{engineRunning ? 'Мониторинг работает, но сейчас нет возможностей с положительной расчётной прибылью после расходов.' : 'Нажми «Запустить» в блоке «Движок» на главной странице, чтобы начать мониторинг стаканов.'}</span></div></div>
   return <div className="table-wrap"><table><thead><tr><th>Монета</th><th>Направление</th><th>Чистый %</th><th>Чистая прибыль</th><th>Сумма</th><th>Риск</th><th></th></tr></thead><tbody>{opportunities.map((x, i) => <tr key={`${x.symbol}-${x.buy_exchange}-${x.sell_exchange}-${i}`} onClick={() => open(x)}><td><div className="coin"><span>{x.symbol.replace('USDT','')}</span><small>USDT</small></div></td><td><div className="route"><b>{exchangeName(x.buy_exchange)}</b><ChevronRight size={14}/><b>{exchangeName(x.sell_exchange)}</b></div></td><td><strong className="profit">{fmtPct(x.net_profit_pct)}</strong></td><td><strong>{fmtMoney(x.net_profit_usd)}</strong></td><td>{fmtMoney(x.position_size)}</td><td><span className={`risk ${x.risk_level.toLowerCase()}`}>{x.risk_level === 'SAFE_CANDIDATE' ? 'SAFE' : x.risk_level}</span></td><td><ChevronRight size={17} className="row-arrow"/></td></tr>)}</tbody></table></div>
 }
 
