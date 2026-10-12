@@ -1,69 +1,75 @@
-# Crypto Arbitrage Bot — backend
+# ArbX — Crypto Arbitrage Bot
 
-This repository is the backend foundation for a spot inter-exchange arbitrage bot.
+ArbX is a Python/FastAPI + React dashboard for monitoring cross-exchange spot arbitrage. Keep it in PAPER mode while validating market data, costs and execution behavior.
 
-## Current layer
+## Included
 
-- Binance Spot REST market data and authenticated order endpoints.
-- Bybit V5 Spot REST market data and authenticated order endpoints.
-- Binance and Bybit public WebSocket order-book streams.
-- Bybit snapshot/delta order-book merge.
-- Depth-aware VWAP and concrete trade-size profitability.
-- Configurable exchange fees, slippage and other costs.
-- Safety Engine with size, loss, profit, liquidity and stale-book limits.
-- Continuous `TradingEngine` scanner/executor loop.
-- Optional automatic execution controlled by `AUTO_EXECUTE`.
-- Strict order-state handling: unknown execution is never treated as filled.
-- Client-order-id idempotency and status re-check after uncertain requests.
-- Partial-fill recovery path.
-- PAPER balances and IOC-style depth simulation.
-- FastAPI endpoints for health, status, engine control, live opportunities and manual trade execution.
+- Binance Spot and Bybit Spot public order-book WebSocket streams.
+- Depth-aware VWAP calculations and net profitability estimates.
+- Configurable fees, slippage and position limits.
+- Continuous scanner with visible per-symbol market-data diagnostics.
+- SQLite history for scan snapshots, positive opportunities, engine events and capital settings.
+- Historical analytics endpoints and dashboard metrics.
+- First-run account setup, password hashing (PBKDF2-HMAC-SHA256), expiring server-side sessions and HttpOnly session cookies.
+- PAPER execution by default; live trading remains opt-in.
 
-## Important architecture note
+## Windows quick start
 
-True cross-exchange spot arbitrage normally requires **pre-funded inventory on both exchanges**: quote currency on the buy exchange and the base asset on the sell exchange. The executor therefore performs a balance preflight before trading.
+From the repository root:
 
-Transfers are not used as the critical path of an arbitrage trade because blockchain/exchange transfer latency can destroy the price edge.
-
-## Modes
-
-- `SCAN`: inspect opportunities without execution.
-- `PAPER`: real public market data can be used by the runtime, while orders are simulated locally.
-- `LIVE`: requires exchange credentials and `AUTO_EXECUTE=true`; it is intentionally opt-in.
-
-For safety, keep `AUTO_EXECUTE=false` until PAPER results are understood.
-
-## Run
-
-```bash
-python -m venv .venv
-.venv\\Scripts\\activate
-pip install -r requirements.txt
-copy .env.example .env
-python -m app.main
+```powershell
+py -m pip install -r requirements.txt
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+py run_backend.py
 ```
 
-API:
+In a second PowerShell window:
 
-```bash
-uvicorn app.api.app:app --reload
+```powershell
+cd frontend
+npm.cmd install
+npm.cmd run dev
 ```
 
-Endpoints:
+Open the Vite URL printed in the terminal (usually `http://localhost:5173`). On first visit, create a local username and a strong password of at least 12 characters. The first account setup is available only while no user exists in the database.
 
+## Configuration
+
+Important local defaults in `.env.example`:
+
+- `TRADING_MODE=PAPER`
+- `AUTO_EXECUTE=false`
+- `DATABASE_URL=sqlite+aiosqlite:///./crypto_arb.db`
+- `COOKIE_SECURE=false` for local HTTP development. Set it to `true` behind HTTPS in deployment.
+- `SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT`
+
+Do not commit API keys or a populated `.env`. Do not expose the development server to the public internet; the local dashboard is not a hardened public deployment.
+
+## API
+
+Public:
 - `GET /api/health`
+- `GET /api/auth/status`
+- `POST /api/auth/setup` (first user only)
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+
+Authenticated:
 - `GET /api/status`
-- `GET /api/opportunities?symbol=BTCUSDT&capital_usd=50`
 - `GET /api/opportunities/live`
+- `GET /api/analytics/summary?hours=24`
+- `GET /api/analytics/history?limit=100`
 - `POST /api/engine/start`
 - `POST /api/engine/stop`
-- `POST /api/trade`
+- `POST /api/settings/capital`
 
 ## Verification
 
-```bash
-python -m compileall -q app tests
-pytest -q
+```powershell
+py -m compileall -q app tests
+py -m pytest -q
+cd frontend
+npm.cmd run build
 ```
 
-Do not put API secrets into source code or commit `.env`.
+History is diagnostic/analytical data, not a record of realized profit. A displayed opportunity is an estimate and does not guarantee both legs can fill at those prices.

@@ -1,5 +1,6 @@
 import os
 from app.config import settings
+from app.database.service import get_setting
 from app.exchanges.binance import BinanceExchange
 from app.exchanges.bybit import BybitExchange
 from app.marketdata.scanner import MarketScanner
@@ -19,12 +20,8 @@ class Runtime:
         self.executor = TradeExecutor(self.exchanges, mode=settings.trading_mode)
         self.streams = MarketDataManager(self.exchanges, settings.symbols)
         auto_execute = os.getenv("AUTO_EXECUTE", "false").strip().lower() in {"1", "true", "yes", "on"}
-        # Live is intentionally opt-in twice: TRADING_MODE=LIVE and AUTO_EXECUTE=true.
         self.engine = TradingEngine(
-            self.scanner,
-            self.executor,
-            settings.symbols,
-            settings.max_trade_size_usd,
+            self.scanner, self.executor, settings.symbols, settings.max_trade_size_usd,
             interval_seconds=float(os.getenv("SCAN_INTERVAL_SECONDS", "0.25")),
             cooldown_seconds=float(os.getenv("TRADE_COOLDOWN_SECONDS", "2.0")),
             auto_execute=auto_execute,
@@ -34,6 +31,14 @@ class Runtime:
     async def start(self):
         if self.started:
             return
+        saved_capital = await get_setting("capital_usd")
+        if saved_capital is not None:
+            try:
+                capital = float(saved_capital)
+                if 0 < capital <= settings.max_trade_size_usd:
+                    self.engine.capital_usd = capital
+            except (TypeError, ValueError):
+                pass
         await self.streams.start()
         await self.engine.start()
         self.started = True

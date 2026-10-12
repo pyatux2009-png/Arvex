@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
 import {
   Activity, BarChart3, ChevronRight, CircleDollarSign, Gauge, LayoutDashboard,
   ListFilter, Menu, Pause, Play, RefreshCw, Settings, ShieldCheck, TrendingUp,
-  X, Zap
+  X, Zap, LogOut
 } from 'lucide-react'
 
-const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
+const API = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`
+const apiFetch = (input: RequestInfo | URL, init: RequestInit = {}) => fetch(input, { ...init, credentials: 'include' })
 
 type Opportunity = {
   symbol: string
@@ -43,10 +45,12 @@ type Status = {
     last_scan_at: number
     execution_count: number
     error_count: number
+    diagnostics?: Record<string, any>
   }
 }
 
 type Page = 'home' | 'links' | 'stats' | 'trading' | 'risk' | 'settings'
+type AuthState = 'checking' | 'setup' | 'login' | 'authenticated'
 
 const menu = [
   { id: 'home' as Page, label: 'Главная', icon: LayoutDashboard },
@@ -65,6 +69,10 @@ const exchangeName = (id: string) => ({
 
 function App() {
   const [page, setPage] = useState<Page>('home')
+  const [authState, setAuthState] = useState<AuthState>('checking')
+  const [authUsername, setAuthUsername] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [opportunities, setOpportunities] = useState<Opportunity[]>([])
   const [status, setStatus] = useState<Status | null>(null)
@@ -85,10 +93,18 @@ function App() {
   async function refresh() {
     try {
       setError('')
-      const [s, o] = await Promise.all([
-        fetch(`${API}/api/status`).then(r => r.json()),
-        fetch(`${API}/api/opportunities/live`).then(r => r.json()),
+      const [statusResponse, opportunitiesResponse] = await Promise.all([
+        apiFetch(`${API}/api/status`),
+        apiFetch(`${API}/api/opportunities/live`),
       ])
+      if (statusResponse.status === 401) {
+        setAuthState('login')
+        setStatus(null)
+        return
+      }
+      if (!statusResponse.ok || !opportunitiesResponse.ok) throw new Error('Backend request failed')
+      const s = await statusResponse.json()
+      const o = await opportunitiesResponse.json()
       setStatus(s)
       const incoming = Array.isArray(o.opportunities) ? o.opportunities : []
       setOpportunities(incoming)
@@ -103,17 +119,31 @@ function App() {
   }
 
   useEffect(() => {
+    let active = true
+    apiFetch(`${API}/api/auth/status`).then(r => r.json()).then(data => {
+      if (active) setAuthState(data.authenticated ? 'authenticated' : data.setup_required ? 'setup' : 'login')
+    }).catch(() => {
+      if (active) {
+        setAuthState('login')
+        setError('Не удалось подключиться к backend. Проверь, что FastAPI запущен на порту 8000.')
+      }
+    })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    if (authState !== 'authenticated') return
     refresh()
     const timer = window.setInterval(refresh, 1000)
     return () => window.clearInterval(timer)
-  }, [])
+  }, [authState])
 
   async function saveCapital() {
     const value = Number(capital.replace(',', '.'))
     if (!Number.isFinite(value) || value <= 0) return setError('Введите корректную сумму больше 0.')
     setLoading(true)
     try {
-      const response = await fetch(`${API}/api/settings/capital`, {
+      const response = await apiFetch(`${API}/api/settings/capital`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ capital_usd: value })
       })
       const data = await response.json()
@@ -131,14 +161,46 @@ function App() {
     setLoading(true)
     try {
       const running = status?.engine?.running
-      await fetch(`${API}/api/engine/${running ? 'stop' : 'start'}`, { method: 'POST' })
+      await apiFetch(`${API}/api/engine/${running ? 'stop' : 'start'}`, { method: 'POST' })
       await refresh()
     } catch { setError('Не удалось изменить состояние двигателя.') }
     finally { setLoading(false) }
   }
 
+  async function submitAuth(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAuthBusy(true)
+    setError('')
+    try {
+      const endpoint = authState === 'setup' ? 'setup' : 'login'
+      const response = await apiFetch(`${API}/api/auth/${endpoint}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: authUsername, password: authPassword })
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить вход')
+      setAuthState('authenticated')
+      setAuthPassword('')
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка авторизации')
+    } finally { setAuthBusy(false) }
+  }
+
+  async function logout() {
+    try { await apiFetch(`${API}/api/auth/logout`, { method: 'POST' }) } catch { /* clear local view regardless */ }
+    setAuthState('login')
+    setStatus(null)
+    setOpportunities([])
+  }
+
   const best = opportunities[0]
   const avgNet = useMemo(() => opportunities.length ? opportunities.reduce((a, x) => a + x.net_profit_pct, 0) / opportunities.length : 0, [opportunities])
+
+  if (authState !== 'authenticated') {
+    return <AuthGate state={authState} username={authUsername} setUsername={setAuthUsername}
+      password={authPassword} setPassword={setAuthPassword} onSubmit={submitAuth} busy={authBusy} error={error} />
+  }
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
@@ -167,7 +229,7 @@ function App() {
         <div><div className="eyebrow">ARBX / {page.toUpperCase()}</div><h1>{menu.find(x => x.id === page)?.label}</h1></div>
         <div className="top-actions">
           <div className="live-indicator"><span className="live-dot"/> Live</div>
-          <button className="icon-btn" onClick={refresh} title="Обновить"><RefreshCw size={18}/></button>
+          <button className="icon-btn" onClick={refresh} title="Обновить"><RefreshCw size={18}/></button><button className="icon-btn" onClick={logout} title="Выйти"><LogOut size={18}/></button>
         </div>
       </header>
 
@@ -206,6 +268,7 @@ function HomePage({ best, opportunities, avgNet, status, capital, setCapital, sa
       <Metric title="Средний net %" value={opportunities.length ? fmtPct(avgNet) : '—'} />
     </section>
 
+    <DiagnosticsPanel diagnostics={status?.engine?.diagnostics ?? {}} />
     <section className="panel links-panel">
       <div className="section-head"><div><span className="label">ТОП ВОЗМОЖНОСТИ</span><h2>Связки с чистым процентом</h2></div><button className="ghost-btn" onClick={() => open(best)} disabled={!best}>Открыть лучшую <ChevronRight size={16}/></button></div>
       <OpportunityTable opportunities={opportunities.slice(0, 8)} open={open} engineRunning={Boolean(status?.engine?.running)}/>
@@ -219,9 +282,22 @@ function LinksPage({ opportunities, open, capital, status }: { opportunities: Op
 }
 
 function StatsPage({ opportunities, status }: { opportunities: Opportunity[]; status: Status | null }) {
+  const [history, setHistory] = useState<any>(null)
+  useEffect(() => { apiFetch(`${API}/api/analytics/summary?hours=24`).then(r => r.ok ? r.json() : null).then(setHistory).catch(() => setHistory(null)) }, [])
   const profit = opportunities.reduce((a, x) => a + x.net_profit_usd, 0)
   const max = opportunities.length ? Math.max(...opportunities.map(x => x.net_profit_pct)) : 0
-  return <div className="content"><div className="metrics-grid"><Metric title="Сканирований с ошибкой" value={String(status?.engine.error_count ?? 0)} /><Metric title="Исполнений" value={String(status?.engine.execution_count ?? 0)} /><Metric title="Сумма net по найденным" value={fmtMoney(profit)} /><Metric title="Максимальный net %" value={fmtPct(max)} accent /></div><div className="panel chart-panel"><div className="section-head"><div><span className="label">РАСПРЕДЕЛЕНИЕ</span><h2>Доходность текущих связок</h2></div></div><div className="bars">{opportunities.slice(0, 12).map((x, i) => <div className="bar-row" key={`${x.symbol}-${x.buy_exchange}-${x.sell_exchange}-${i}`}><div className="bar-label"><span>{x.symbol}</span><b>{fmtPct(x.net_profit_pct)}</b></div><div className="bar-track"><div className="bar-fill" style={{width: `${Math.min(100, Math.max(4, x.net_profit_pct * 20))}%`}}/></div></div>)}</div></div></div>
+  return <div className="content"><div className="metrics-grid">
+    <Metric title="Сканирований с ошибкой" value={String(status?.engine.error_count ?? 0)} />
+    <Metric title="Исполнений" value={String(status?.engine.execution_count ?? 0)} />
+    <Metric title="Исторических снимков (24 ч)" value={String(history?.scan_snapshots ?? 0)} />
+    <Metric title="Исторических возможностей" value={String(history?.opportunity_history_rows ?? 0)} />
+    <Metric title="Сумма net по текущим" value={fmtMoney(profit)} />
+    <Metric title="Максимальный net сейчас" value={fmtPct(max)} accent />
+    <Metric title="Лучший валовый спред (24 ч)" value={fmtPct(history?.best_gross_profit_pct ?? 0)} />
+    <Metric title="Лучший net в истории (24 ч)" value={fmtPct(history?.best_net_profit_pct ?? 0)} accent />
+  </div>
+  <DiagnosticsPanel diagnostics={status?.engine?.diagnostics ?? {}} />
+  <div className="panel chart-panel"><div className="section-head"><div><span className="label">РАСПРЕДЕЛЕНИЕ</span><h2>Доходность текущих связок</h2></div></div><div className="bars">{opportunities.slice(0, 12).map((x, i) => <div className="bar-row" key={`${x.symbol}-${x.buy_exchange}-${x.sell_exchange}-${i}`}><div className="bar-label"><span>{x.symbol}</span><b>{fmtPct(x.net_profit_pct)}</b></div><div className="bar-track"><div className="bar-fill" style={{width: `${Math.min(100, Math.max(4, x.net_profit_pct * 20))}%`}}/></div></div>)}</div></div></div>
 }
 
 function TradingPage({ status, toggleEngine, loading }: any) {
@@ -248,6 +324,41 @@ function OpportunityTable({ opportunities, open, engineRunning }: { opportunitie
 function OpportunityModal({ item, onClose }: { item: Opportunity; onClose: () => void }) {
   return <div className="modal-backdrop" onClick={onClose}><div className="modal" onClick={e => e.stopPropagation()}><div className="modal-head"><div><span className="label">ДЕТАЛИ СВЯЗКИ</span><h2>{item.symbol}</h2></div><button className="icon-btn" onClick={onClose}><X size={19}/></button></div><div className="route-card"><div><span>ПОКУПКА</span><b>{exchangeName(item.buy_exchange)}</b><small>${item.buy_price.toFixed(6)}</small></div><ChevronRight className="route-chevron"/><div><span>ПРОДАЖА</span><b>{exchangeName(item.sell_exchange)}</b><small>${item.sell_price.toFixed(6)}</small></div></div><div className="net-card"><span>ЧИСТАЯ ДОХОДНОСТЬ</span><strong>{fmtPct(item.net_profit_pct)}</strong><b>{fmtMoney(item.net_profit_usd)}</b></div><div className="detail-grid"><Detail label="Размер" value={fmtMoney(item.position_size)}/><Detail label="Количество" value={item.quantity.toFixed(6)}/><Detail label="Комиссии" value={`${fmtMoney(item.total_fees_usd)} (${item.fees_pct.toFixed(3)}%)`}/><Detail label="Проскальзывание" value={`${fmtMoney(item.slippage_usd)} (${item.slippage_pct.toFixed(3)}%)`}/><Detail label="Ликвидность" value={item.liquidity_ok ? 'OK' : 'Недостаточно'}/><Detail label="Возраст стакана" value={`${item.book_age.toFixed(2)} сек`}/></div><div className="modal-note">Чистый процент берётся из backend и не является гарантированной фактической прибылью до подтверждения исполнения обеих ног.</div></div></div>
 }
+
+function AuthGate({ state, username, setUsername, password, setPassword, onSubmit, busy, error }: {
+  state: AuthState; username: string; setUsername: (v: string) => void; password: string; setPassword: (v: string) => void;
+  onSubmit: (e: FormEvent<HTMLFormElement>) => void; busy: boolean; error: string
+}) {
+  if (state === 'checking') return <div className="auth-shell"><div className="auth-card"><div className="brand-mark"><Zap size={20} fill="currentColor" /></div><h1>ArbX</h1><p>Проверяем защищённую сессию…</p></div></div>
+  const setup = state === 'setup'
+  return <div className="auth-shell"><form className="auth-card" onSubmit={onSubmit}>
+    <div className="brand-mark"><Zap size={20} fill="currentColor" /></div>
+    <span className="label">ARBX / PRIVATE ACCESS</span>
+    <h1>{setup ? 'Создай аккаунт' : 'С возвращением'}</h1>
+    <p>{setup ? 'Первичная настройка выполняется один раз. Используй надёжный пароль длиной не менее 12 символов.' : 'Войди, чтобы открыть панель мониторинга и историю аналитики.'}</p>
+    {error && <div className="auth-error">{error}</div>}
+    <label htmlFor="auth-username">Логин</label>
+    <input id="auth-username" autoComplete="username" minLength={3} maxLength={80} required value={username} onChange={e => setUsername(e.target.value)} />
+    <label htmlFor="auth-password">Пароль</label>
+    <input id="auth-password" type="password" autoComplete={setup ? 'new-password' : 'current-password'} minLength={setup ? 12 : 1} required value={password} onChange={e => setPassword(e.target.value)} />
+    <button className="auth-submit" disabled={busy}>{busy ? 'Подожди…' : setup ? 'Создать защищённый аккаунт' : 'Войти'}</button>
+    <small>Сессия хранится в защищённой HttpOnly cookie и автоматически истекает через 12 часов.</small>
+  </form></div>
+}
+
+function DiagnosticsPanel({ diagnostics }: { diagnostics: Record<string, any> }) {
+  const entries = Object.values(diagnostics)
+  return <section className="panel diagnostics-panel">
+    <div className="section-head"><div><span className="label">MARKET DATA / DIAGNOSTICS</span><h2>Состояние сканирования</h2></div><Activity className="orange-icon"/></div>
+    {!entries.length ? <div className="diagnostics-empty">Ожидаем первый проход сканера. Если здесь долго пусто, проверь, что мониторинг запущен.</div> :
+      <div className="diagnostics-grid">{entries.map((item: any) => <div className="diagnostic-card" key={item.symbol}>
+        <div className="diagnostic-title"><b>{item.symbol}</b><span className={item.books_available >= 2 ? 'diag-good' : 'diag-bad'}>{item.status === 'ready' ? 'Стаканы готовы' : 'Нет свежих стаканов'}</span></div>
+        <div className="diagnostic-stats"><span>Свежих стаканов <b>{item.books_available}/{item.exchanges_configured}</b></span><span>Направлений проверено <b>{item.evaluated_routes}</b></span><span>Валовый спред выше нуля <b>{item.gross_positive_routes}</b></span><span>Чистый максимум <b>{Number(item.max_net_profit_pct || 0).toFixed(3)}%</b></span></div>
+        {(item.stale_or_empty_exchanges?.length || item.exchange_errors?.length) ? <div className="diagnostic-warning">Проблемные биржи: {[...(item.stale_or_empty_exchanges || []), ...(item.exchange_errors || [])].filter((v: string, i: number, a: string[]) => a.indexOf(v) === i).join(', ')}</div> : null}
+      </div>)}</div>}
+  </section>
+}
+
 function Detail({ label, value }: { label: string; value: string }) { return <div className="detail"><span>{label}</span><b>{value}</b></div> }
 
 export default App

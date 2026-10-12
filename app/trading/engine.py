@@ -2,16 +2,13 @@ import asyncio
 import logging
 import time
 from typing import Any, Dict, Optional
+from app.database.service import persist_scan_history, record_engine_event
 
 logger = logging.getLogger("TradingEngine")
 
 
 class TradingEngine:
-    """Continuous scanner/executor loop.
-
-    The engine never invents execution results. If an order cannot be confirmed,
-    the executor returns UNKNOWN/UNRESOLVED and the engine records that state.
-    """
+    """Continuous scanner/executor loop with compact historical diagnostics."""
 
     def __init__(self, scanner, executor, symbols, capital_usd: float,
                  interval_seconds: float = 0.25, cooldown_seconds: float = 2.0,
@@ -31,6 +28,7 @@ class TradingEngine:
         self.last_result: Optional[Dict[str, Any]] = None
         self.execution_count = 0
         self.error_count = 0
+        self._last_persist_at = 0.0
 
     async def start(self):
         if self.running:
@@ -38,6 +36,10 @@ class TradingEngine:
         self.running = True
         self.task = asyncio.create_task(self._run(), name="arb-trading-engine")
         logger.info("Trading engine started auto_execute=%s", self.auto_execute)
+        try:
+            await record_engine_event("engine_started", "symbols=" + ",".join(self.symbols) + "; capital_usd=" + str(self.capital_usd))
+        except Exception:
+            logger.exception("Could not persist engine start event")
 
     async def stop(self):
         self.running = False
@@ -48,6 +50,10 @@ class TradingEngine:
             except asyncio.CancelledError:
                 pass
             self.task = None
+        try:
+            await record_engine_event("engine_stopped", "Monitoring stopped")
+        except Exception:
+            logger.exception("Could not persist engine stop event")
         logger.info("Trading engine stopped")
 
     async def scan_once(self):
@@ -58,8 +64,7 @@ class TradingEngine:
             except Exception:
                 self.error_count += 1
                 logger.exception("Scan failed for %s", symbol)
-        combined.sort(key=lambda x: (x.get("risk_level") == "SAFE_CANDIDATE",
-                                     x.get("net_profit_usd", 0.0)), reverse=True)
+        combined.sort(key=lambda x: (x.get("risk_level") == "SAFE_CANDIDATE", x.get("net_profit_usd", 0.0)), reverse=True)
         self.last_scan_at = time.time()
         self.last_opportunities = combined[:50]
         return self.last_opportunities
@@ -68,17 +73,21 @@ class TradingEngine:
         while self.running:
             try:
                 opportunities = await self.scan_once()
-                if self.auto_execute and opportunities and time.time() - self.last_execution_at >= self.cooldown_seconds:
+                now = time.time()
+                if now - self._last_persist_at >= 5.0:
+                    try:
+                        await persist_scan_history(getattr(self.scanner, "diagnostics_by_symbol", {}), opportunities, self.error_count)
+                    except Exception:
+                        logger.exception("Could not persist scan history")
+                    self._last_persist_at = now
+                if self.auto_execute and opportunities and now - self.last_execution_at >= self.cooldown_seconds:
                     for opportunity in opportunities:
-                        if opportunity.get("risk_level") == "BLOCKED":
-                            continue
-                        if opportunity.get("net_profit_usd", 0.0) <= 0:
+                        if opportunity.get("risk_level") == "BLOCKED" or opportunity.get("net_profit_usd", 0.0) <= 0:
                             continue
                         result = await self.executor.execute_arbitrage(opportunity)
                         self.last_result = result
                         self.last_execution_at = time.time()
                         self.execution_count += 1
-                        # Never fire multiple trades from the same scan.
                         break
             except asyncio.CancelledError:
                 break
@@ -89,14 +98,9 @@ class TradingEngine:
 
     def status(self) -> Dict[str, Any]:
         return {
-            "running": self.running,
-            "auto_execute": self.auto_execute,
-            "symbols": self.symbols,
-            "capital_usd": self.capital_usd,
-            "last_scan_at": self.last_scan_at,
-            "last_execution_at": self.last_execution_at,
-            "execution_count": self.execution_count,
-            "error_count": self.error_count,
-            "last_opportunities": self.last_opportunities[:10],
-            "last_result": self.last_result,
+            "running": self.running, "auto_execute": self.auto_execute, "symbols": self.symbols,
+            "capital_usd": self.capital_usd, "last_scan_at": self.last_scan_at,
+            "execution_count": self.execution_count, "error_count": self.error_count,
+            "last_opportunities": self.last_opportunities[:10], "last_result": self.last_result,
+            "diagnostics": getattr(self.scanner, "diagnostics_by_symbol", {}),
         }
