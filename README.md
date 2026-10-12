@@ -2,6 +2,10 @@
 
 ArbX is a Python/FastAPI + React dashboard for monitoring cross-exchange spot arbitrage. Keep it in PAPER mode while validating market data, costs and execution behavior.
 
+## Supported Python version
+
+The backend targets **CPython 3.14 (64-bit)**. Use Python 3.14 for the virtual environment and every backend command; do not mix packages installed by another Python version.
+
 ## Included
 
 - Binance Spot and Bybit Spot public order-book WebSocket streams.
@@ -15,12 +19,15 @@ ArbX is a Python/FastAPI + React dashboard for monitoring cross-exchange spot ar
 
 ## Windows quick start
 
-From the repository root:
+From the repository root, use PowerShell:
 
 ```powershell
-py -m pip install -r requirements.txt
+py -3.14 --version
+py -3.14 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
-py run_backend.py
+.\.venv\Scripts\python.exe run_backend.py
 ```
 
 In a second PowerShell window:
@@ -66,8 +73,8 @@ Authenticated:
 ## Verification
 
 ```powershell
-py -m compileall -q app tests
-py -m pytest -q
+.\.venv\Scripts\python.exe -m compileall -q app tests
+.\.venv\Scripts\python.exe -m pytest -q
 cd frontend
 npm.cmd run build
 ```
