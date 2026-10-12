@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+import time
 from app.arbitrage.profitability import calculate_net_profit
 from app.safety.engine import SafetyEngine
 from app.recovery.engine import RecoveryEngine
@@ -91,6 +92,8 @@ def test_higher_slippage_results_in_lower_net_profit():
         buy_price=100.0,
         sell_price=105.0,
         volume=1.0,
+        custom_buy_fee=0.002,
+        custom_sell_fee=0.002,
         slippage_pct=0.5
     )
     assert res_high["net_profit_usd"] < res_low["net_profit_usd"]
@@ -161,16 +164,19 @@ async def test_canceled_order():
     cancel_res = await om.exchanges["binance"].cancel_order("BTCUSDT", client_order_id=ord_res["client_order_id"])
     assert cancel_res["status"] == "CANCELED"
 
-def test_stale_orderbook():
+@pytest.mark.asyncio
+async def test_stale_orderbook():
     binance = BinanceExchange(paper_mode=True)
     binance.orderbooks["BTCUSDT"] = {
         "symbol": "BTCUSDT",
         "bids": [[100.0, 1.0]],
         "asks": [[101.0, 1.0]],
-        "timestamp": asyncio.get_event_loop().time() - 10.0
+        "timestamp": time.time() - 10.0
     }
     scanner = MarketScanner({"binance": binance}, max_book_age_seconds=2.0)
-    assert True
+    await scanner.scan_opportunities("BTCUSDT", target_capital_usd=10.0)
+    assert scanner.diagnostics_by_symbol["BTCUSDT"]["stale_or_empty_exchanges"] == ["binance"]
+    assert scanner.diagnostics_by_symbol["BTCUSDT"]["books_available"] == 0
 
 @pytest.mark.asyncio
 async def test_insufficient_liquidity():
@@ -256,6 +262,6 @@ async def test_no_fake_live_balance():
 def test_api_and_database_imports():
     from app.api.app import app
     from app.database.database import engine
-    assert app.title == "Crypto Arbitrage Bot API"
+    assert app.title == "ArbX Arbitrage API"
     # The test environment may omit optional aiosqlite; runtime requirements install it.
     assert engine is None or hasattr(engine, "url")
