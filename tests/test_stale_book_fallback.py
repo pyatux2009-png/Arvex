@@ -110,3 +110,25 @@ async def test_bybit_status_falls_back_to_history_for_completed_ioc(monkeypatch)
     assert requested_urls[1].endswith("/v5/order/history")
     assert result["status"] == "FILLED"
     assert result["filled_amount"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_binance_rate_limits_retries_when_no_book_is_cached(monkeypatch):
+    exchange = BinanceExchange(paper_mode=False)
+    calls = 0
+
+    async def failing_request_json(method, url, params=None, headers=None, data=None):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("temporary network failure")
+
+    monkeypatch.setattr(binance_module, "request_json", failing_request_json)
+    with pytest.raises(RuntimeError):
+        await exchange.get_order_book("BTCUSDT")
+
+    unavailable = await exchange.get_order_book("BTCUSDT")
+
+    assert calls == 1
+    assert unavailable["source"] == "unavailable"
+    assert unavailable["bids"] == []
+    assert unavailable["asks"] == []
