@@ -123,3 +123,49 @@ def calculate_net_profit(
         "net_profit_usd": round(net_profit_usd, 8),
         "net_profit_pct": round(net_profit_pct, 8),
     }
+
+
+def calculate_realized_profit(
+    buy_price: float,
+    sell_price: float,
+    volume: float,
+    buy_fee_usd: float,
+    sell_fee_usd: float,
+    other_costs_usd: float = OTHER_COSTS_USD,
+) -> dict:
+    """Calculate realized P&L using exchange-reported fees in quote-currency USD."""
+    buy_price = _finite_number(buy_price, "buy_price")
+    sell_price = _finite_number(sell_price, "sell_price")
+    volume = _finite_number(volume, "volume")
+    buy_fee_usd = _finite_number(buy_fee_usd, "buy_fee_usd")
+    sell_fee_usd = _finite_number(sell_fee_usd, "sell_fee_usd")
+    other_costs_usd = _finite_number(other_costs_usd, "other_costs_usd")
+
+    if buy_price <= 0 or sell_price <= 0 or volume <= 0:
+        raise ValueError("Prices and volume must be greater than zero")
+    if buy_fee_usd < 0 or sell_fee_usd < 0 or other_costs_usd < 0:
+        raise ValueError("Fees and other costs cannot be negative")
+
+    gross_buy_cost = buy_price * volume
+    gross_sell_revenue = sell_price * volume
+    gross_profit_usd = gross_sell_revenue - gross_buy_cost
+    total_fees_usd = buy_fee_usd + sell_fee_usd
+    net_profit_usd = gross_profit_usd - total_fees_usd - other_costs_usd
+    buy_fee_rate = buy_fee_usd / gross_buy_cost
+    sell_fee_rate = sell_fee_usd / gross_sell_revenue
+    return {
+        "gross_profit_usd": round(gross_profit_usd, 8),
+        "gross_profit_pct": round(gross_profit_usd / gross_buy_cost * 100.0, 8),
+        "buy_fee": buy_fee_rate,
+        "sell_fee": sell_fee_rate,
+        "buy_fee_usd": round(buy_fee_usd, 8),
+        "sell_fee_usd": round(sell_fee_usd, 8),
+        "total_fees_usd": round(total_fees_usd, 8),
+        "fees_pct": round(total_fees_usd / gross_buy_cost * 100.0, 8),
+        "slippage_usd": 0.0,
+        "slippage_pct": 0.0,
+        "other_costs_usd": round(other_costs_usd, 8),
+        "net_profit_usd": round(net_profit_usd, 8),
+        "net_profit_pct": round(net_profit_usd / gross_buy_cost * 100.0, 8),
+        "fee_source": "exchange_reported",
+    }
