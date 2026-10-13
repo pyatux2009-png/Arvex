@@ -22,7 +22,7 @@ jobs:
       - name: Remove tracked or stale frontend dependencies
         run: rm -rf node_modules
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm install
       - name: Build frontend
         run: npm run build
 
