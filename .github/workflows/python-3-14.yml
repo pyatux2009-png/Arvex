@@ -22,14 +22,7 @@ jobs:
       - name: Remove tracked or stale frontend dependencies
         run: rm -rf node_modules
       - name: Install frontend dependencies
-        run: npm install
-      - name: Upload generated lockfile for review
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-lockfile
-          path: frontend/package-lock.json
-          if-no-files-found: error
-          retention-days: 1
+        run: npm ci
       - name: Build frontend
         run: npm run build
 
