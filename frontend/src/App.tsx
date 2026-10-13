@@ -228,7 +228,7 @@ function App() {
         <button className="icon-btn mobile-menu" onClick={() => setMobileOpen(v => !v)}><Menu size={20}/></button>
         <div><div className="eyebrow">ARBX / {page.toUpperCase()}</div><h1>{menu.find(x => x.id === page)?.label}</h1></div>
         <div className="top-actions">
-          <div className="live-indicator"><span className="live-dot"/> Live</div>
+          <div className="live-indicator"><span className="live-dot"/> Рыночные данные</div>
           <button className="icon-btn" onClick={refresh} title="Обновить"><RefreshCw size={18}/></button><button className="icon-btn" onClick={logout} title="Выйти"><LogOut size={18}/></button>
         </div>
       </header>
