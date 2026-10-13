@@ -2,7 +2,7 @@ import hashlib,hmac,json,time,uuid,os
 from typing import Dict,Any,Optional
 from app.exchanges.base import BaseExchange
 from app.exchanges.http import request_json
-from app.config import BOOK_MAX_AGE_SECONDS
+from app.config import BOOK_MAX_AGE_SECONDS, EXCHANGE_FEES
 
 class BybitExchange(BaseExchange):
     REST="https://api.bybit.com"
@@ -84,7 +84,7 @@ class BybitExchange(BaseExchange):
             filled+=take; notional+=take*p; rem-=take
             if rem<=1e-12: break
         status="REJECTED" if filled<=0 else ("FILLED" if rem<=1e-12 else "PARTIALLY_FILLED"); avg=notional/filled if filled else 0.0
-        fee_rate=0.001; fee=notional*fee_rate; base=symbol.upper().replace("USDT","") if symbol.upper().endswith("USDT") else symbol.upper(); quote="USDT" if symbol.upper().endswith("USDT") else None
+        fee_rate=EXCHANGE_FEES["bybit"]["taker"]; fee=notional*fee_rate; base=symbol.upper().replace("USDT","") if symbol.upper().endswith("USDT") else symbol.upper(); quote="USDT" if symbol.upper().endswith("USDT") else None
         if status!="REJECTED" and quote:
             if side=="buy":
                 required=notional+fee
