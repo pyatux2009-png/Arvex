@@ -2,6 +2,7 @@ import hashlib, hmac, time, uuid, os, urllib.parse
 from typing import Dict, Any, Optional
 from app.exchanges.base import BaseExchange
 from app.exchanges.http import request_json
+from app.config import BOOK_MAX_AGE_SECONDS
 
 class BinanceExchange(BaseExchange):
     REST = "https://api.binance.com"
@@ -13,7 +14,7 @@ class BinanceExchange(BaseExchange):
         self.testnet = testnet
         self.market_data_live = market_data_live
         if testnet: self.REST = "https://testnet.binance.vision"
-        self.orderbooks={}; self.orders={}
+        self.orderbooks={}; self.orders={}; self._last_rest_refresh={}
         self.balances={"USDT":10000.0,"BTC":1.0,"ETH":10.0} if paper_mode else {}
     def _signed(self, params):
         p=dict(params); p["timestamp"]=int(time.time()*1000); p.setdefault("recvWindow",5000)
@@ -26,12 +27,26 @@ class BinanceExchange(BaseExchange):
         return {x["asset"]:float(x["free"])+float(x["locked"]) for x in data.get("balances",[])}
     async def get_order_book(self,symbol):
         symbol=symbol.upper()
-        if symbol in self.orderbooks: return self.orderbooks[symbol]
+        now=time.time()
+        cached=self.orderbooks.get(symbol)
+        if cached and now-float(cached.get("timestamp",0.0)) <= BOOK_MAX_AGE_SECONDS:
+            return cached
         if self.paper_mode and not self.market_data_live:
-            return self._paper_default_book(symbol)
-        data=await request_json("GET",self.REST+"/api/v3/depth",params={"symbol":symbol,"limit":100})
-        ob={"symbol":symbol,"bids":[[float(p),float(q)] for p,q in data["bids"]],"asks":[[float(p),float(q)] for p,q in data["asks"]],"timestamp":time.time(),"source":"rest"}
-        self.orderbooks[symbol]=ob; return ob
+            return cached or self._paper_default_book(symbol)
+        # If a WebSocket goes quiet, refresh the stale cache via REST with a
+        # cooldown so the 250 ms scanner loop cannot hammer exchange endpoints.
+        if cached and now-self._last_rest_refresh.get(symbol,0.0) < 0.75:
+            return cached
+        self._last_rest_refresh[symbol]=now
+        try:
+            data=await request_json("GET",self.REST+"/api/v3/depth",params={"symbol":symbol,"limit":100})
+            ob={"symbol":symbol,"bids":[[float(p),float(q)] for p,q in data["bids"]],"asks":[[float(p),float(q)] for p,q in data["asks"]],"timestamp":time.time(),"source":"rest"}
+            self.orderbooks[symbol]=ob
+            return ob
+        except Exception:
+            if cached:
+                return cached
+            raise
     def _paper_default_book(self,symbol):
         return {"symbol":symbol,"bids":[[99.0,10.0],[98.0,50.0]],"asks":[[100.0,10.0],[101.0,50.0]],"timestamp":time.time(),"source":"paper"}
 
