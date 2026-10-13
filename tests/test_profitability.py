@@ -1,6 +1,6 @@
 import pytest
 
-from app.arbitrage.profitability import calculate_net_profit
+from app.arbitrage.profitability import calculate_net_profit, calculate_realized_profit
 
 
 def test_calculate_net_profit_positive():
@@ -66,3 +66,19 @@ def test_legacy_positional_arguments_keep_sell_price_and_quantity():
     res = calculate_net_profit(100.0, 101.0, 2.0)
     assert res["gross_profit_usd"] == pytest.approx(2.0)
     assert res["gross_profit_pct"] == pytest.approx(1.0)
+
+
+def test_realized_profit_uses_reported_fee_amounts():
+    res = calculate_realized_profit(
+        buy_price=100.0,
+        sell_price=101.0,
+        volume=2.0,
+        buy_fee_usd=0.25,
+        sell_fee_usd=0.30,
+        other_costs_usd=0.05,
+    )
+    assert res["gross_profit_usd"] == pytest.approx(2.0)
+    assert res["total_fees_usd"] == pytest.approx(0.55)
+    assert res["net_profit_usd"] == pytest.approx(1.40)
+    assert res["net_profit_pct"] == pytest.approx(0.70)
+    assert res["fee_source"] == "exchange_reported"
