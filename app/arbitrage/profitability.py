@@ -32,7 +32,10 @@ def calculate_net_profit(
     actual_sell_exchange = sell_exchange if isinstance(sell_exchange, str) else "bybit"
     if isinstance(buy_exchange, (int, float)):
         actual_buy_price = _finite_number(buy_exchange, "buy_price")
-        actual_sell_price = _finite_number(sell_price, "sell_price")
+        # In the legacy three-positional-argument form, sell_exchange carries
+        # the numeric sell price and buy_price carries the quantity.
+        legacy_sell_price = sell_exchange if isinstance(sell_exchange, (int, float)) else sell_price
+        actual_sell_price = _finite_number(legacy_sell_price, "sell_price")
         actual_volume = _finite_number(buy_price if volume == 0.0 else volume, "volume")
     else:
         actual_buy_price = _finite_number(buy_price, "buy_price")
