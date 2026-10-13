@@ -73,31 +73,43 @@ class TradeExecutor:
         buy_order_res = await self.order_manager.create_order(buy_ex, symbol, "buy", quantity, buy_price)
         buy_status = buy_order_res.get("status", "UNKNOWN")
         bought_filled = float(buy_order_res.get("filled_amount", 0.0) or 0.0)
-        if buy_status == "UNKNOWN":
-            checked_buy = await self.order_manager.check_order_status_with_timeout(buy_ex, symbol, buy_order_res.get("order_id"), buy_order_res.get("client_order_id"))
-            buy_status = checked_buy.get("status", "UNKNOWN")
-            bought_filled = float(checked_buy.get("filled_amount", 0.0) or 0.0)
+        if buy_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
+            checked_buy = await self.order_manager.resolve_order(buy_ex, symbol, buy_order_res)
             buy_order_res = {**buy_order_res, **checked_buy}
-        if buy_status == "UNKNOWN":
+            buy_status = str(buy_order_res.get("status", "UNKNOWN")).upper()
+            bought_filled = float(buy_order_res.get("filled_amount", 0.0) or 0.0)
+        if buy_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             self.position_manager.set_position_status(position_id, "UNRESOLVED")
-            return {"status": "UNRESOLVED", "reason": "Buy order status is UNKNOWN.", "buy_order": buy_order_res}
-        if buy_status in {"REJECTED", "CANCELED", "EXPIRED"} or bought_filled <= 0:
+            return {
+                "status": "UNRESOLVED",
+                "reason": "Buy order remains unconfirmed after status checks and cancellation attempt; no second order was submitted.",
+                "buy_order": buy_order_res,
+            }
+        # A canceled/expired IOC order can still have a confirmed partial fill.
+        # Process that filled quantity rather than discarding the resulting exposure.
+        if buy_status == "REJECTED" or bought_filled <= 0:
             self.position_manager.set_position_status(position_id, buy_status)
-            return {"status": "FAILED", "reason": f"Buy order failed with status {buy_status}", "buy_order": buy_order_res}
+            return {"status": "FAILED", "reason": f"Buy order has no confirmed fill (status {buy_status})", "buy_order": buy_order_res}
 
         self.position_manager.update_leg_fill(position_id, "buy", bought_filled, buy_order_res.get("avg_price", buy_price))
         sell_order_res = await self.order_manager.create_order(sell_ex, symbol, "sell", bought_filled, sell_price)
         sell_status = sell_order_res.get("status", "UNKNOWN")
         sold_filled = float(sell_order_res.get("filled_amount", 0.0) or 0.0)
-        if sell_status == "UNKNOWN":
-            checked_sell = await self.order_manager.check_order_status_with_timeout(sell_ex, symbol, sell_order_res.get("order_id"), sell_order_res.get("client_order_id"))
-            sell_status = checked_sell.get("status", "UNKNOWN")
-            sold_filled = float(checked_sell.get("filled_amount", 0.0) or 0.0)
+        if sell_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
+            checked_sell = await self.order_manager.resolve_order(sell_ex, symbol, sell_order_res)
             sell_order_res = {**sell_order_res, **checked_sell}
-        if sell_status == "UNKNOWN":
+            sell_status = str(sell_order_res.get("status", "UNKNOWN")).upper()
+            sold_filled = float(sell_order_res.get("filled_amount", 0.0) or 0.0)
+        if sell_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             self.position_manager.set_position_status(position_id, "UNRESOLVED")
-            recovery_result = await self.recovery_engine.handle_exposure(position_id, buy_ex, symbol, bought_filled, "buy")
-            return {"status": "UNRESOLVED", "reason": "Sell order status UNKNOWN", "recovery": recovery_result, "sell_order": sell_order_res}
+            # Do not place a recovery order while the original sell might still fill.
+            # That could oversell inventory if the exchange later confirms execution.
+            return {
+                "status": "UNRESOLVED",
+                "reason": "Sell order remains unconfirmed after status checks and cancellation attempt; exposure requires manual reconciliation.",
+                "sell_order": sell_order_res,
+                "buy_order": buy_order_res,
+            }
 
         self.position_manager.update_leg_fill(position_id, "sell", sold_filled, sell_order_res.get("avg_price", sell_price))
         if sold_filled < bought_filled:
