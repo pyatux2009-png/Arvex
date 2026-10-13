@@ -22,9 +22,23 @@ class BybitExchange(BaseExchange):
     def _require(self):
         if not self.api_key or not self.api_secret: raise ValueError("Bybit API credentials missing")
     async def get_balance(self):
-        if self.paper_mode:return dict(self.balances)
-        self._require(); p={"accountType":"UNIFIED"}; d=await request_json("GET",self.REST+"/v5/account/wallet-balance",params=p,headers=self._headers("GET","/v5/account/wallet-balance",p)); self._ok(d); out={}
-        for c in d["result"]["list"][0].get("coin",[]): out[c["coin"]]=float(c.get("walletBalance",0)); return out
+        if self.paper_mode:
+            return dict(self.balances)
+        self._require()
+        params = {"accountType": "UNIFIED"}
+        data = await request_json(
+            "GET",
+            self.REST + "/v5/account/wallet-balance",
+            params=params,
+            headers=self._headers("GET", "/v5/account/wallet-balance", params),
+        )
+        self._ok(data)
+        balances = {}
+        accounts = data.get("result", {}).get("list", [])
+        for account in accounts:
+            for coin in account.get("coin", []):
+                balances[coin["coin"]] = float(coin.get("walletBalance", 0.0))
+        return balances
     async def get_order_book(self,symbol):
         symbol=symbol.upper()
         now=time.time()
@@ -58,12 +72,26 @@ class BybitExchange(BaseExchange):
             if client_order_id in self.orders:return self.orders[client_order_id]
             if order_id in self.orders:return self.orders[order_id]
             return {"order_id":order_id,"client_order_id":client_order_id,"status":"UNKNOWN","filled_amount":0.0,"remaining_amount":0.0,"avg_price":0.0,"timestamp":time.time()}
-        self._require(); p={"category":"spot","symbol":symbol.upper()};
-        if order_id:p["orderId"]=order_id
-        elif client_order_id:p["orderLinkId"]=client_order_id
-        d=await request_json("GET",self.REST+"/v5/order/realtime",params=p,headers=self._headers("GET","/v5/order/realtime",p)); self._ok(d); lst=d["result"].get("list",[])
-        if not lst:return {"order_id":order_id,"client_order_id":client_order_id,"status":"UNKNOWN","filled_amount":0.0,"remaining_amount":0.0,"avg_price":0.0,"timestamp":time.time()}
-        x=lst[0]; return self._normalize(x,symbol)
+        self._require()
+        params={"category":"spot","symbol":symbol.upper()}
+        if order_id:params["orderId"]=order_id
+        elif client_order_id:params["orderLinkId"]=client_order_id
+
+        # IOC orders may disappear from the realtime list as soon as they finish.
+        # Query order history before reporting UNKNOWN, otherwise a confirmed fill
+        # can be mistaken for a failed order and its exposure left unmanaged.
+        endpoint="/v5/order/realtime"
+        data=await request_json("GET",self.REST+endpoint,params=params,headers=self._headers("GET",endpoint,params))
+        self._ok(data)
+        orders=data.get("result",{}).get("list",[])
+        if not orders:
+            endpoint="/v5/order/history"
+            data=await request_json("GET",self.REST+endpoint,params=params,headers=self._headers("GET",endpoint,params))
+            self._ok(data)
+            orders=data.get("result",{}).get("list",[])
+        if not orders:
+            return {"order_id":order_id,"client_order_id":client_order_id,"status":"UNKNOWN","filled_amount":0.0,"remaining_amount":0.0,"avg_price":0.0,"timestamp":time.time()}
+        return self._normalize(orders[0],symbol)
     async def cancel_order(self,symbol,order_id=None,client_order_id=None):
         if self.paper_mode:
             key=client_order_id or order_id
