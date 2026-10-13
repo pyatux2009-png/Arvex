@@ -35,8 +35,8 @@ class BinanceExchange(BaseExchange):
             return cached or self._paper_default_book(symbol)
         # If a WebSocket goes quiet, refresh the stale cache via REST with a
         # cooldown so the 250 ms scanner loop cannot hammer exchange endpoints.
-        if cached and now-self._last_rest_refresh.get(symbol,0.0) < 0.75:
-            return cached
+        if now-self._last_rest_refresh.get(symbol,0.0) < 0.75:
+            return cached or {"symbol":symbol,"bids":[],"asks":[],"timestamp":0.0,"source":"unavailable"}
         self._last_rest_refresh[symbol]=now
         try:
             data=await request_json("GET",self.REST+"/api/v3/depth",params={"symbol":symbol,"limit":100})
