@@ -16,7 +16,7 @@ EXCHANGE_FEES={
 TRADING_MODE=os.getenv('TRADING_MODE','PAPER').upper(); LIVE_TRADING=TRADING_MODE=='LIVE'
 MAX_TRADE_SIZE_USD=_float_env('MAX_TRADE_SIZE_USD',100.0); MAX_DAILY_LOSS_USD=_float_env('MAX_DAILY_LOSS_USD',5.0)
 MIN_NET_PROFIT_USD=_float_env('MIN_NET_PROFIT_USD',0.05); MIN_NET_PROFIT_PCT=_float_env('MIN_NET_PROFIT_PCT',0.10)
-MAX_SLIPPAGE_PCT=_float_env('MAX_SLIPPAGE_PCT',0.20); BOOK_MAX_AGE_SECONDS=_float_env('BOOK_MAX_AGE_SECONDS',2.0)
+MAX_SLIPPAGE_PCT=_float_env('MAX_SLIPPAGE_PCT',0.20); ESTIMATED_SLIPPAGE_PCT=_float_env('ESTIMATED_SLIPPAGE_PCT',0.05); BOOK_MAX_AGE_SECONDS=_float_env('BOOK_MAX_AGE_SECONDS',2.0)
 OTHER_COSTS_USD=_float_env('OTHER_COSTS_USD',0.0)
 DATABASE_URL=os.getenv('DATABASE_URL','sqlite+aiosqlite:///./crypto_arb.db')
 SYMBOLS=[s.strip().upper() for s in os.getenv('SYMBOLS','BTCUSDT,ETHUSDT,SOLUSDT').split(',') if s.strip()]
@@ -27,7 +27,7 @@ class Settings:
  trading_mode:str=TRADING_MODE; live_trading:bool=LIVE_TRADING; database_url:str=DATABASE_URL
  max_trade_size_usd:float=MAX_TRADE_SIZE_USD; max_daily_loss_usd:float=MAX_DAILY_LOSS_USD
  min_net_profit_usd:float=MIN_NET_PROFIT_USD; min_net_profit_pct:float=MIN_NET_PROFIT_PCT
- max_slippage_pct:float=MAX_SLIPPAGE_PCT; book_max_age_seconds:float=BOOK_MAX_AGE_SECONDS; other_costs_usd:float=OTHER_COSTS_USD
+ max_slippage_pct:float=MAX_SLIPPAGE_PCT; estimated_slippage_pct:float=ESTIMATED_SLIPPAGE_PCT; book_max_age_seconds:float=BOOK_MAX_AGE_SECONDS; other_costs_usd:float=OTHER_COSTS_USD
  symbols:tuple=tuple(SYMBOLS)
  binance_testnet:bool=BINANCE_TESTNET
  bybit_testnet:bool=BYBIT_TESTNET

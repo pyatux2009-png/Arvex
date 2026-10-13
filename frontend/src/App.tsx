@@ -228,7 +228,7 @@ function App() {
         <button className="icon-btn mobile-menu" onClick={() => setMobileOpen(v => !v)}><Menu size={20}/></button>
         <div><div className="eyebrow">ARBX / {page.toUpperCase()}</div><h1>{menu.find(x => x.id === page)?.label}</h1></div>
         <div className="top-actions">
-          <div className="live-indicator"><span className="live-dot"/> Live</div>
+          <div className="live-indicator"><span className="live-dot"/> Рыночные данные</div>
           <button className="icon-btn" onClick={refresh} title="Обновить"><RefreshCw size={18}/></button><button className="icon-btn" onClick={logout} title="Выйти"><LogOut size={18}/></button>
         </div>
       </header>
@@ -353,7 +353,7 @@ function DiagnosticsPanel({ diagnostics }: { diagnostics: Record<string, any> })
     {!entries.length ? <div className="diagnostics-empty">Ожидаем первый проход сканера. Если здесь долго пусто, проверь, что мониторинг запущен.</div> :
       <div className="diagnostics-grid">{entries.map((item: any) => <div className="diagnostic-card" key={item.symbol}>
         <div className="diagnostic-title"><b>{item.symbol}</b><span className={item.books_available >= 2 ? 'diag-good' : 'diag-bad'}>{item.status === 'ready' ? 'Стаканы готовы' : 'Нет свежих стаканов'}</span></div>
-        <div className="diagnostic-stats"><span>Свежих стаканов <b>{item.books_available}/{item.exchanges_configured}</b></span><span>Направлений проверено <b>{item.evaluated_routes}</b></span><span>Валовый спред выше нуля <b>{item.gross_positive_routes}</b></span><span>Чистый максимум <b>{Number(item.max_net_profit_pct || 0).toFixed(3)}%</b></span></div>
+        <div className="diagnostic-stats"><span>Свежих стаканов <b>{item.books_available}/{item.exchanges_configured}</b></span><span>Направлений проверено <b>{item.evaluated_routes}</b></span><span>Валовый спред выше нуля <b>{item.gross_positive_routes}</b></span><span>Чистая прибыль ≤ 0 <b>{item.nonpositive_net_routes ?? 0}</b></span><span>Недостаточная ликвидность <b>{item.insufficient_liquidity_routes ?? 0}</b></span><span>Учтённое проскальзывание <b>{Number(item.estimated_slippage_pct ?? 0.05).toFixed(3)}%</b></span><span>Чистый максимум <b>{Number(item.max_net_profit_pct || 0).toFixed(3)}%</b></span></div>
         {(item.stale_or_empty_exchanges?.length || item.exchange_errors?.length) ? <div className="diagnostic-warning">Проблемные биржи: {[...(item.stale_or_empty_exchanges || []), ...(item.exchange_errors || [])].filter((v: string, i: number, a: string[]) => a.indexOf(v) === i).join(', ')}</div> : null}
       </div>)}</div>}
   </section>

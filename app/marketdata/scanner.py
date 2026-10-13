@@ -2,16 +2,17 @@ import time
 import logging
 from app.arbitrage.profitability import calculate_net_profit
 from app.arbitrage.scoring import evaluate_risk_level
-from app.config import BOOK_MAX_AGE_SECONDS
+from app.config import BOOK_MAX_AGE_SECONDS, ESTIMATED_SLIPPAGE_PCT
 from app.marketdata.provider import MarketDataProvider
 
 logger = logging.getLogger("MarketScanner")
 
 
 class MarketScanner(MarketDataProvider):
-    def __init__(self, exchanges, max_book_age_seconds=BOOK_MAX_AGE_SECONDS):
+    def __init__(self, exchanges, max_book_age_seconds=BOOK_MAX_AGE_SECONDS, estimated_slippage_pct=ESTIMATED_SLIPPAGE_PCT):
         self.exchanges = exchanges
-        self.max_book_age_seconds = max_book_age_seconds
+        self.max_book_age_seconds = max(0.0, float(max_book_age_seconds))
+        self.estimated_slippage_pct = max(0.0, float(estimated_slippage_pct))
         self.diagnostics_by_symbol = {}
 
     async def get_order_book(self, symbol):
@@ -76,8 +77,10 @@ class MarketScanner(MarketDataProvider):
             "symbol": symbol, "updated_at": now, "exchanges_configured": len(self.exchanges),
             "books_available": len(books), "stale_or_empty_exchanges": stale_books,
             "exchange_errors": errors, "evaluated_routes": 0, "gross_positive_routes": 0,
-            "positive_opportunities": 0, "max_gross_profit_pct": 0.0,
-            "max_net_profit_pct": 0.0, "status": "ready" if len(books) >= 2 else "waiting_for_books",
+            "positive_opportunities": 0, "nonpositive_net_routes": 0,
+            "insufficient_liquidity_routes": 0, "max_gross_profit_pct": 0.0,
+            "max_net_profit_pct": 0.0, "estimated_slippage_pct": self.estimated_slippage_pct,
+            "status": "ready" if len(books) >= 2 else "waiting_for_books",
         }
         out = []
         names = list(books)
@@ -97,7 +100,8 @@ class MarketScanner(MarketDataProvider):
                 sell_vwap, _, sell_ok = self._vwap_for_qty(sell_entry["bids"], qty)
                 metrics = calculate_net_profit(
                     buy_exchange=buy, sell_exchange=sell, buy_price=buy_vwap,
-                    sell_price=sell_vwap, volume=qty
+                    sell_price=sell_vwap, volume=qty,
+                    slippage_pct=self.estimated_slippage_pct,
                 )
                 if diagnostic["evaluated_routes"] == 1:
                     diagnostic["max_gross_profit_pct"] = metrics["gross_profit_pct"]
@@ -107,6 +111,10 @@ class MarketScanner(MarketDataProvider):
                     diagnostic["max_net_profit_pct"] = max(diagnostic["max_net_profit_pct"], metrics["net_profit_pct"])
                 if metrics["gross_profit_pct"] > 0:
                     diagnostic["gross_positive_routes"] += 1
+                if not (buy_ok and sell_ok):
+                    diagnostic["insufficient_liquidity_routes"] += 1
+                if metrics["net_profit_usd"] <= 0:
+                    diagnostic["nonpositive_net_routes"] += 1
                 risk = evaluate_risk_level(metrics["net_profit_pct"], max(buy_age, sell_age), qty * min(buy_vwap, sell_vwap))
                 out.append({
                     "symbol": symbol, "buy_exchange": buy, "sell_exchange": sell,
@@ -114,7 +122,7 @@ class MarketScanner(MarketDataProvider):
                     "position_size": qty * buy_vwap, "liquidity_ok": buy_ok and sell_ok,
                     "book_age": max(buy_age, sell_age), "risk_level": risk, **metrics, "timestamp": now,
                 })
-        positive = [item for item in out if item["net_profit_usd"] > 0]
+        positive = [item for item in out if item["net_profit_usd"] > 0 and item["liquidity_ok"]]
         diagnostic["positive_opportunities"] = len(positive)
         self.diagnostics_by_symbol[symbol] = diagnostic
         return sorted(positive, key=lambda item: item["net_profit_usd"], reverse=True)
