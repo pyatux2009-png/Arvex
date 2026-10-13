@@ -5,7 +5,7 @@ from app.trading.positions import PositionManager
 from app.recovery.engine import RecoveryEngine
 from app.safety.engine import SafetyEngine
 from app.portfolio.inventory import InventoryManager
-from app.arbitrage.profitability import calculate_net_profit
+from app.arbitrage.profitability import calculate_net_profit, calculate_realized_profit
 from app.config import LIVE_TRADING
 
 logger = logging.getLogger("TradeExecutor")
@@ -117,15 +117,35 @@ class TradeExecutor:
             recovery_result = await self.recovery_engine.handle_exposure(position_id, buy_ex, symbol, bought_filled - sold_filled, "buy")
             return {"status": "PARTIAL_RECOVERY", "sold_filled": sold_filled, "recovery": recovery_result}
 
-        pnl_calc = calculate_net_profit(
-            buy_exchange=buy_ex,
-            sell_exchange=sell_ex,
-            buy_price=float(buy_order_res.get("avg_price", buy_price)),
-            sell_price=float(sell_order_res.get("avg_price", sell_price)),
-            volume=sold_filled,
-            slippage_pct=0.0,
-            other_costs_usd=float(opportunity.get("other_costs_usd", 0.0)),
-        )
+        realized_buy_fee = buy_order_res.get("fee_usd")
+        realized_sell_fee = sell_order_res.get("fee_usd")
+        realized_buy_price = float(buy_order_res.get("avg_price", buy_price))
+        realized_sell_price = float(sell_order_res.get("avg_price", sell_price))
+        other_costs = float(opportunity.get("other_costs_usd", 0.0))
+        if realized_buy_fee is not None and realized_sell_fee is not None:
+            # PAPER adapters report the fees actually deducted from each fill.
+            # Use those values rather than re-estimating from a configured rate.
+            pnl_calc = calculate_realized_profit(
+                buy_price=realized_buy_price,
+                sell_price=realized_sell_price,
+                volume=sold_filled,
+                buy_fee_usd=float(realized_buy_fee),
+                sell_fee_usd=float(realized_sell_fee),
+                other_costs_usd=other_costs,
+            )
+        else:
+            # Some LIVE exchange responses do not include execution fees. Until
+            # fee history is confirmed, label this as an estimate, not realized.
+            pnl_calc = calculate_net_profit(
+                buy_exchange=buy_ex,
+                sell_exchange=sell_ex,
+                buy_price=realized_buy_price,
+                sell_price=realized_sell_price,
+                volume=sold_filled,
+                slippage_pct=0.0,
+                other_costs_usd=other_costs,
+            )
+            pnl_calc["fee_source"] = "configured_estimate"
         net_pnl = pnl_calc["net_profit_usd"]
         if net_pnl < 0:
             self.safety_engine.record_loss(-net_pnl)
