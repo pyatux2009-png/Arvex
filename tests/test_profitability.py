@@ -60,3 +60,9 @@ def test_rejects_invalid_cost_inputs(kwargs):
             volume=1.0,
             **kwargs,
         )
+
+
+def test_legacy_positional_arguments_keep_sell_price_and_quantity():
+    res = calculate_net_profit(100.0, 101.0, 2.0)
+    assert res["gross_profit_usd"] == pytest.approx(2.0)
+    assert res["gross_profit_pct"] == pytest.approx(1.0)
