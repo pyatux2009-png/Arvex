@@ -2,13 +2,14 @@ import hashlib,hmac,json,time,uuid,os
 from typing import Dict,Any,Optional
 from app.exchanges.base import BaseExchange
 from app.exchanges.http import request_json
+from app.config import BOOK_MAX_AGE_SECONDS
 
 class BybitExchange(BaseExchange):
     REST="https://api.bybit.com"
     def __init__(self,api_key=None,api_secret=None,paper_mode=True,testnet=False,market_data_live=False):
         self.api_key=api_key or os.getenv("BYBIT_API_KEY"); self.api_secret=api_secret or os.getenv("BYBIT_API_SECRET"); self.paper_mode=paper_mode; self.testnet=testnet; self.market_data_live=market_data_live
         if testnet:self.REST="https://api-testnet.bybit.com"
-        self.orderbooks={}; self.orders={}; self.balances={"USDT":10000.0,"BTC":1.0,"ETH":10.0} if paper_mode else {}
+        self.orderbooks={}; self.orders={}; self._last_rest_refresh={}; self.balances={"USDT":10000.0,"BTC":1.0,"ETH":10.0} if paper_mode else {}
     def _paper_default_book(self,symbol):
         return {"symbol":symbol,"bids":[[99.0,10.0],[98.0,50.0]],"asks":[[100.0,10.0],[101.0,50.0]],"timestamp":time.time(),"source":"paper"}
 
@@ -26,11 +27,28 @@ class BybitExchange(BaseExchange):
         for c in d["result"]["list"][0].get("coin",[]): out[c["coin"]]=float(c.get("walletBalance",0)); return out
     async def get_order_book(self,symbol):
         symbol=symbol.upper()
-        if symbol in self.orderbooks:return self.orderbooks[symbol]
+        now=time.time()
+        cached=self.orderbooks.get(symbol)
+        if cached and now-float(cached.get("timestamp",0.0)) <= BOOK_MAX_AGE_SECONDS:
+            return cached
         if self.paper_mode and not self.market_data_live:
-            return self._paper_default_book(symbol)
-        d=await request_json("GET",self.REST+"/v5/market/orderbook",params={"category":"spot","symbol":symbol,"limit":50}); self._ok(d); r=d["result"]
-        ob={"symbol":symbol,"bids":[[float(x[0]),float(x[1])] for x in r["b"]],"asks":[[float(x[0]),float(x[1])] for x in r["a"]],"timestamp":time.time(),"source":"rest"}; self.orderbooks[symbol]=ob; return ob
+            return cached or self._paper_default_book(symbol)
+        # A stale cached WebSocket book must not permanently disable REST
+        # fallback; rate-limit refreshes while the scanner runs continuously.
+        if cached and now-self._last_rest_refresh.get(symbol,0.0) < 0.75:
+            return cached
+        self._last_rest_refresh[symbol]=now
+        try:
+            d=await request_json("GET",self.REST+"/v5/market/orderbook",params={"category":"spot","symbol":symbol,"limit":50})
+            self._ok(d)
+            r=d["result"]
+            ob={"symbol":symbol,"bids":[[float(x[0]),float(x[1])] for x in r["b"]],"asks":[[float(x[0]),float(x[1])] for x in r["a"]],"timestamp":time.time(),"source":"rest"}
+            self.orderbooks[symbol]=ob
+            return ob
+        except Exception:
+            if cached:
+                return cached
+            raise
     async def create_order(self,symbol,side,amount,price,client_order_id=None):
         if self.paper_mode:return await self._paper_order(symbol,side,amount,price,client_order_id)
         self._require(); cid=client_order_id or f"arb_{uuid.uuid4().hex[:20]}"; body={"category":"spot","symbol":symbol.upper(),"side":side.capitalize(),"orderType":"Limit","qty":self._fmt(amount),"price":self._fmt(price),"timeInForce":"IOC","orderLinkId":cid}
