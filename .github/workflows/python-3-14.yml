@@ -18,11 +18,11 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: frontend/package.json
+          cache-dependency-path: frontend/package-lock.json
       - name: Remove tracked or stale frontend dependencies
         run: rm -rf node_modules
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
       - name: Build frontend
         run: npm run build
 
