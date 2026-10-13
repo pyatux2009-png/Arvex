@@ -49,8 +49,8 @@ class BybitExchange(BaseExchange):
             return cached or self._paper_default_book(symbol)
         # A stale cached WebSocket book must not permanently disable REST
         # fallback; rate-limit refreshes while the scanner runs continuously.
-        if cached and now-self._last_rest_refresh.get(symbol,0.0) < 0.75:
-            return cached
+        if now-self._last_rest_refresh.get(symbol,0.0) < 0.75:
+            return cached or {"symbol":symbol,"bids":[],"asks":[],"timestamp":0.0,"source":"unavailable"}
         self._last_rest_refresh[symbol]=now
         try:
             d=await request_json("GET",self.REST+"/v5/market/orderbook",params={"category":"spot","symbol":symbol,"limit":50})
