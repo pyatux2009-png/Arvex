@@ -6,7 +6,7 @@ from app.recovery.engine import RecoveryEngine
 from app.safety.engine import SafetyEngine
 from app.portfolio.inventory import InventoryManager
 from app.arbitrage.profitability import calculate_net_profit, calculate_realized_profit
-from app.config import EXCHANGE_FEES, MAX_TRADE_SIZE_USD
+from app.config import EXCHANGE_FEES, MAX_TRADE_SIZE_USD, OTHER_COSTS_USD
 import math
 import os
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -131,7 +131,7 @@ class TradeExecutor:
                 sell_price=sell_price,
                 volume=float(quantity),
                 slippage_pct=float(prepared.get("slippage_pct", 0.05)),
-                other_costs_usd=float(prepared.get("other_costs_usd", 0.0)),
+                other_costs_usd=float(prepared.get("other_costs_usd", OTHER_COSTS_USD)),
             )
         except (TypeError, ValueError, KeyError, ArithmeticError) as exc:
             return {"allowed": False, "reason": f"Could not recalculate economics at IOC limits: {exc}"}
@@ -315,7 +315,7 @@ class TradeExecutor:
         realized_sell_fee = sell_order_res.get("fee_usd")
         realized_buy_price = float(buy_order_res.get("avg_price", buy_price))
         realized_sell_price = float(sell_order_res.get("avg_price", sell_price))
-        other_costs = float(opportunity.get("other_costs_usd", 0.0))
+        other_costs = float(opportunity.get("other_costs_usd", OTHER_COSTS_USD))
         if realized_buy_fee is not None and realized_sell_fee is not None:
             # PAPER adapters report the fees actually deducted from each fill.
             # Use those values rather than re-estimating from a configured rate.
