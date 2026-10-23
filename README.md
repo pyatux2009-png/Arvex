@@ -2,6 +2,8 @@
 
 This repository is the backend foundation for a spot inter-exchange arbitrage bot.
 
+The default scanner universe contains 24 USDT spot pairs: BTC, ETH, SOL, BNB, XRP, DOGE, ADA, LINK, AVAX, LTC, BCH, TRX, DOT, TON, XLM, UNI, ATOM, NEAR, ETC, SUI, FIL, AAVE, ARB and OP. These are a liquid large-cap starting set, not a guarantee of stable prices or profitable arbitrage. The `SYMBOLS` environment variable can override the list. Binance/Bybit are the only execution venues; OKX/Kraken are discovery-only.
+
 ## Current layer
 
 - Binance Spot REST market data and authenticated order endpoints.
