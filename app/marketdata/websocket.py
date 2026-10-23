@@ -72,6 +72,14 @@ class BinanceOrderBookStream(OrderBookStream):
 
 
 class BybitOrderBookStream(OrderBookStream):
+    @staticmethod
+    def subscription_batches(symbols, max_args=10):
+        """Bybit public Spot accepts at most 10 topic args per subscribe request."""
+        if max_args < 1:
+            raise ValueError("max_args must be positive")
+        topics = [f"orderbook.50.{str(symbol).upper()}" for symbol in symbols]
+        return [topics[index:index + max_args] for index in range(0, len(topics), max_args)]
+
     def __init__(self, exchange, symbols):
         super().__init__(exchange, symbols)
         self.books = {}
@@ -105,10 +113,10 @@ class BybitOrderBookStream(OrderBookStream):
             ping_interval=20,
             ping_timeout=20,
         ) as ws:
-            await ws.send(json.dumps({
-                "op": "subscribe",
-                "args": [f"orderbook.50.{symbol}" for symbol in self.symbols],
-            }))
+            # Bybit Spot limits each subscribe request to 10 topics.
+            # Send sequential batches so the expanded 24-symbol universe is fully subscribed.
+            for batch in self.subscription_batches(self.symbols, max_args=10):
+                await ws.send(json.dumps({"op": "subscribe", "args": batch}))
             async for raw in ws:
                 if not self.running:
                     break
