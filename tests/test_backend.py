@@ -259,3 +259,85 @@ def test_api_and_database_imports():
     assert app.title == "Crypto Arbitrage Bot API"
     # The test environment may omit optional aiosqlite; runtime requirements install it.
     assert engine is None or hasattr(engine, "url")
+
+
+
+@pytest.mark.asyncio
+async def test_recovery_rejects_non_finite_amount_before_submitting():
+    class NoOrderExchange:
+        def __init__(self):
+            self.submissions = 0
+
+        async def get_order_book(self, symbol):
+            return {"bids": [[99.0, 1.0]], "asks": [[100.0, 1.0]]}
+
+        async def create_order(self, *args, **kwargs):
+            self.submissions += 1
+            return {"status": "FILLED", "filled_amount": 1.0}
+
+    exchange = NoOrderExchange()
+    recovery = RecoveryEngine({"fake": exchange})
+    result = await recovery.handle_exposure("pos_2", "fake", "BTCUSDT", float("nan"), "buy")
+
+    assert result["status"] == "UNRESOLVED"
+    assert exchange.submissions == 0
+
+
+@pytest.mark.asyncio
+async def test_recovery_reconciles_unknown_submission_by_client_order_id():
+    class DelayedConfirmationExchange:
+        def __init__(self):
+            self.status_checks = 0
+            self.client_order_id = None
+
+        async def get_order_book(self, symbol):
+            return {"bids": [[99.0, 1.0]], "asks": [[100.0, 1.0]]}
+
+        async def create_order(self, symbol, side, amount, price, client_order_id=None):
+            self.client_order_id = client_order_id
+            return {
+                "status": "UNKNOWN",
+                "filled_amount": 0.0,
+                "client_order_id": client_order_id,
+            }
+
+        async def get_order_status(self, symbol, order_id=None, client_order_id=None):
+            self.status_checks += 1
+            assert client_order_id == self.client_order_id
+            return {
+                "status": "FILLED",
+                "filled_amount": 1.0,
+                "client_order_id": client_order_id,
+            }
+
+    exchange = DelayedConfirmationExchange()
+    recovery = RecoveryEngine({"fake": exchange}, max_recovery_time_seconds=0.2)
+    result = await recovery.handle_exposure("pos_3", "fake", "BTCUSDT", 1.0, "buy")
+
+    assert result["status"] == "RECOVERED"
+    assert result["filled_amount"] == pytest.approx(1.0)
+    assert exchange.status_checks == 1
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"status": "FILLED", "filled_amount": float("nan")},
+        {"status": "FILLED", "filled_amount": -0.1},
+        {"status": "FILLED", "filled_amount": 2.0},
+        ["not", "an", "order"],
+    ],
+)
+async def test_order_manager_marks_malformed_exchange_response_unknown(response):
+    class MalformedExchange:
+        async def create_order(self, *args, **kwargs):
+            return response
+
+    manager = OrderManager({"fake": MalformedExchange()})
+    result = await manager.create_order("fake", "BTCUSDT", "buy", 1.0, 100.0, "malformed-1")
+
+    assert result["status"] == "UNKNOWN"
+    assert result["client_order_id"] == "malformed-1"
+    assert "reconciliation" in result["reason"].lower()

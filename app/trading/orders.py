@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import time
 import uuid
 
@@ -35,14 +36,48 @@ class OrderManager:
                 "filled_amount": 0.0, "remaining_amount": amount, "avg_price": 0.0,
                 "reason": str(exc),
             }
-        filled = float(result.get("filled_amount", 0.0) or 0.0)
+        if not isinstance(result, dict):
+            return {
+                "order_id": None, "client_order_id": client_id, "status": "UNKNOWN",
+                "filled_amount": 0.0, "remaining_amount": amount,
+                "reason": "Exchange returned a non-object order response; status reconciliation required.",
+            }
+        try:
+            filled = float(result.get("filled_amount", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            filled = float("nan")
+        try:
+            requested = float(amount)
+        except (TypeError, ValueError):
+            requested = float("nan")
+        if (
+            not math.isfinite(filled)
+            or not math.isfinite(requested)
+            or requested <= 0
+            or filled < 0
+            or filled > requested + 1e-9
+        ):
+            # Do not trust malformed execution quantities. Preserve the client ID
+            # so callers can reconcile with the exchange instead of retrying.
+            return {
+                **result,
+                "exchange": exchange_name,
+                "order_id": result.get("order_id"),
+                "client_order_id": result.get("client_order_id", client_id),
+                "requested_amount": amount,
+                "status": "UNKNOWN",
+                "filled_amount": 0.0,
+                "remaining_amount": amount,
+                "timestamp": result.get("timestamp", time.time()),
+                "reason": "Exchange returned an invalid fill amount; status reconciliation required.",
+            }
         record = {
             **result,
             "exchange": exchange_name,
             "client_order_id": result.get("client_order_id", client_id),
             "requested_amount": amount,
             "filled_amount": filled,
-            "remaining_amount": max(0.0, amount - filled),
+            "remaining_amount": max(0.0, requested - filled),
             "timestamp": result.get("timestamp", time.time()),
         }
         self.active_orders[client_id] = record

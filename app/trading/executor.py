@@ -6,9 +6,11 @@ from app.recovery.engine import RecoveryEngine
 from app.safety.engine import SafetyEngine
 from app.portfolio.inventory import InventoryManager
 from app.arbitrage.profitability import calculate_net_profit, calculate_realized_profit
-from app.config import LIVE_TRADING, EXCHANGE_FEES, MAX_TRADE_SIZE_USD
+from app.config import EXCHANGE_FEES, MAX_TRADE_SIZE_USD, OTHER_COSTS_USD
 import math
 import os
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from math import gcd
 
 logger = logging.getLogger("TradeExecutor")
 
@@ -24,11 +26,211 @@ class TradeExecutor:
         self.inventory = InventoryManager()
 
     @staticmethod
+    def _parse_fill_amount(order: dict, maximum: float) -> float:
+        """Return NaN for malformed or out-of-range exchange fill reports."""
+        if not isinstance(order, dict):
+            return float("nan")
+        try:
+            filled = float(order.get("filled_amount", 0.0) or 0.0)
+            maximum = float(maximum)
+        except (TypeError, ValueError):
+            return float("nan")
+        if not math.isfinite(filled) or not math.isfinite(maximum):
+            return float("nan")
+        if filled < 0 or maximum <= 0 or filled > maximum + 1e-9:
+            return float("nan")
+        return min(filled, maximum)
+
+    @staticmethod
+    def _reported_execution_price(order: dict, fallback: float) -> float:
+        """Use an exchange average price only when it is finite and positive."""
+        if not isinstance(order, dict):
+            return float("nan")
+        raw = order.get("avg_price")
+        if raw in (None, ""):
+            return float(fallback)
+        try:
+            price = float(raw)
+        except (TypeError, ValueError):
+            return float("nan")
+        return price if math.isfinite(price) and price > 0 else float("nan")
+
+    @staticmethod
     def _assets(symbol: str):
         symbol = symbol.upper()
         if symbol.endswith("USDT"):
             return symbol[:-4], "USDT"
         return symbol, None
+
+    @staticmethod
+    def _common_quantity_step(step_a: float, step_b: float) -> Decimal:
+        """Return the smallest quantity increment compatible with both decimal steps."""
+        a, b = Decimal(str(step_a or 0)), Decimal(str(step_b or 0))
+        if a <= 0:
+            return b
+        if b <= 0:
+            return a
+        places = max(0, -a.as_tuple().exponent, -b.as_tuple().exponent)
+        scale = 10 ** places
+        ai, bi = int(a * scale), int(b * scale)
+        if ai <= 0 or bi <= 0:
+            return max(a, b)
+        return Decimal((ai * bi) // gcd(ai, bi)) / Decimal(scale)
+
+    @staticmethod
+    def _floor_quantity_to_step(quantity: float, step: float) -> Decimal:
+        """Round a quantity down to a positive exchange lot increment."""
+        value = Decimal(str(quantity))
+        increment = Decimal(str(step))
+        if not value.is_finite() or not increment.is_finite() or value <= 0 or increment <= 0:
+            return Decimal("0")
+        return (value / increment).to_integral_value(rounding=ROUND_FLOOR) * increment
+
+    async def _sellable_quantity(self, exchange, symbol: str, amount: float, price: float) -> float:
+        """Return only the amount the sell venue can accept, or zero if rules are uncertain."""
+        get_rules = getattr(exchange, "get_market_rules", None)
+        if not callable(get_rules):
+            return 0.0
+        try:
+            rules = await get_rules(symbol)
+            if not isinstance(rules, dict):
+                return 0.0
+            required = {"status", "min_qty", "qty_step", "tick_size", "min_notional"}
+            if not required.issubset(rules):
+                return 0.0
+            if str(rules["status"]).upper() not in {"TRADING", "TRADINGSTATUS", "ENABLED"}:
+                return 0.0
+            min_qty = float(rules["min_qty"])
+            qty_step = float(rules["qty_step"])
+            tick_size = float(rules["tick_size"])
+            min_notional = float(rules["min_notional"])
+            if (
+                not all(math.isfinite(v) for v in (min_qty, qty_step, tick_size, min_notional, amount, price))
+                or min_qty < 0 or qty_step <= 0 or tick_size <= 0 or min_notional < 0
+                or amount <= 0 or price <= 0
+            ):
+                return 0.0
+            quantity = self._floor_quantity_to_step(amount, qty_step)
+            if float(quantity) + 1e-12 < min_qty or float(quantity) * price + 1e-9 < min_notional:
+                return 0.0
+            return float(quantity)
+        except Exception as exc:
+            logger.warning("Could not verify sell quantity rules for %s: %s", symbol, exc)
+            return 0.0
+
+    @staticmethod
+    def _round_price_to_tick(price: float, tick: float, *, round_up: bool) -> float:
+        value = Decimal(str(price))
+        increment = Decimal(str(tick or 0))
+        if increment <= 0:
+            return float(value)
+        rounding = ROUND_CEILING if round_up else ROUND_FLOOR
+        units = (value / increment).to_integral_value(rounding=rounding)
+        return float(units * increment)
+
+    async def _prepare_execution_opportunity(self, opportunity: dict) -> dict:
+        """Normalize IOC limit prices and quantity, then recompute net economics."""
+        prepared = dict(opportunity)
+        buy_name = str(prepared.get("buy_exchange", "")).lower()
+        sell_name = str(prepared.get("sell_exchange", "")).lower()
+        buy_ex, sell_ex = self.exchanges.get(buy_name), self.exchanges.get(sell_name)
+        if not buy_ex or not sell_ex:
+            return {"allowed": False, "reason": "Execution exchange adapter is unavailable."}
+
+        try:
+            quantity = Decimal(str(prepared.get("quantity")))
+            buy_price = float(prepared.get("buy_order_price", prepared.get("buy_price")))
+            sell_price = float(prepared.get("sell_order_price", prepared.get("sell_price")))
+            if not quantity.is_finite() or quantity <= 0 or not math.isfinite(buy_price) or not math.isfinite(sell_price) or buy_price <= 0 or sell_price <= 0:
+                raise ValueError("Quantity and IOC limit prices must be finite and positive.")
+        except (TypeError, ValueError, ArithmeticError) as exc:
+            return {"allowed": False, "reason": f"Invalid IOC order inputs: {exc}"}
+
+        rules_by_exchange = {}
+        for name, exchange in ((buy_name, buy_ex), (sell_name, sell_ex)):
+            get_rules = getattr(exchange, "get_market_rules", None)
+            if not callable(get_rules):
+                return {
+                    "allowed": False,
+                    "reason": f"{name} adapter does not provide required market rules; execution blocked.",
+                }
+            try:
+                rules = await get_rules(str(prepared.get("symbol", "")).upper())
+                if not isinstance(rules, dict):
+                    raise ValueError("market rules response is not an object")
+                required = {"status", "min_qty", "qty_step", "tick_size", "min_notional"}
+                missing = required.difference(rules)
+                if missing:
+                    raise ValueError(f"market rules missing required fields: {', '.join(sorted(missing))}")
+                status = str(rules["status"]).upper()
+                if status not in {"TRADING", "TRADINGSTATUS", "ENABLED"}:
+                    return {
+                        "allowed": False,
+                        "reason": f"{prepared.get('symbol', '').upper()} is not trading on {name} (status {status}).",
+                    }
+                for key in ("min_qty", "qty_step", "tick_size", "min_notional"):
+                    value = float(rules[key])
+                    if not math.isfinite(value) or value < 0:
+                        raise ValueError(f"{key} must be finite and non-negative")
+                    rules[key] = value
+                if rules["qty_step"] <= 0 or rules["tick_size"] <= 0:
+                    raise ValueError("qty_step and tick_size must be greater than zero")
+                rules_by_exchange[name] = rules
+            except Exception as exc:
+                return {"allowed": False, "reason": f"Could not verify {name} market rules: {exc}"}
+
+        buy_rules, sell_rules = rules_by_exchange[buy_name], rules_by_exchange[sell_name]
+        common_step = self._common_quantity_step(
+            float(buy_rules.get("qty_step", 0) or 0),
+            float(sell_rules.get("qty_step", 0) or 0),
+        )
+        if common_step > 0:
+            quantity = (quantity / common_step).to_integral_value(rounding=ROUND_FLOOR) * common_step
+        if quantity <= 0:
+            return {"allowed": False, "reason": "Quantity rounds down to zero at the exchanges' compatible quantity step."}
+
+        buy_price = self._round_price_to_tick(buy_price, float(buy_rules.get("tick_size", 0) or 0), round_up=True)
+        sell_price = self._round_price_to_tick(sell_price, float(sell_rules.get("tick_size", 0) or 0), round_up=False)
+        if not math.isfinite(buy_price) or not math.isfinite(sell_price) or buy_price <= 0 or sell_price <= 0:
+            return {"allowed": False, "reason": "Normalized IOC limit prices are invalid."}
+
+        # IOC buy limits can be above the VWAP used by the scanner. Keep the
+        # actual worst-case buy notional within both the requested size and cap.
+        try:
+            requested_position_size = float(prepared.get("position_size", float(quantity) * buy_price))
+            if not math.isfinite(requested_position_size) or requested_position_size <= 0:
+                raise ValueError("position_size must be finite and positive")
+            capital_cap = min(float(MAX_TRADE_SIZE_USD), requested_position_size)
+            max_quantity = self._floor_quantity_to_step(capital_cap / buy_price, float(common_step))
+            quantity = min(quantity, max_quantity)
+        except (TypeError, ValueError, ArithmeticError) as exc:
+            return {"allowed": False, "reason": f"Could not enforce trade-size cap after IOC rounding: {exc}"}
+        if quantity <= 0:
+            return {"allowed": False, "reason": "Quantity rounds to zero under the IOC price and trade-size cap."}
+
+        try:
+            metrics = calculate_net_profit(
+                buy_exchange=buy_name,
+                sell_exchange=sell_name,
+                buy_price=buy_price,
+                sell_price=sell_price,
+                volume=float(quantity),
+                slippage_pct=float(prepared.get("slippage_pct", 0.05)),
+                other_costs_usd=float(prepared.get("other_costs_usd", OTHER_COSTS_USD)),
+            )
+        except (TypeError, ValueError, KeyError, ArithmeticError) as exc:
+            return {"allowed": False, "reason": f"Could not recalculate economics at IOC limits: {exc}"}
+        if not math.isfinite(metrics["net_profit_usd"]) or metrics["net_profit_usd"] <= 0:
+            return {"allowed": False, "reason": "Net profit is non-positive after IOC tick rounding, fees, slippage and other costs."}
+
+        prepared.update(metrics)
+        prepared["quantity"] = float(quantity)
+        prepared["buy_price"] = buy_price
+        prepared["sell_price"] = sell_price
+        prepared["buy_order_price"] = buy_price
+        prepared["sell_order_price"] = sell_price
+        prepared["position_size"] = float(quantity) * buy_price
+        return {"allowed": True, "opportunity": prepared}
 
     async def _preflight_balances(self, opportunity: dict) -> dict:
         symbol = opportunity["symbol"]
@@ -55,10 +257,15 @@ class TradeExecutor:
             (opportunity["sell_exchange"], sell_ex, float(opportunity.get("sell_price", 0.0))),
         ):
             get_rules = getattr(exchange, "get_market_rules", None)
-            if get_rules is None:
-                continue
+            if not callable(get_rules):
+                return {
+                    "allowed": False,
+                    "reason": f"{exchange_name} adapter does not provide required market rules; execution blocked.",
+                }
             try:
                 rules = await get_rules(symbol)
+                if not isinstance(rules, dict):
+                    raise ValueError("market rules response is not an object")
             except Exception as exc:
                 return {"allowed": False, "reason": f"Could not verify {exchange_name} market rules: {exc}"}
             status = str(rules.get("status", "TRADING")).upper()
@@ -88,7 +295,10 @@ class TradeExecutor:
     async def execute_arbitrage(self, opportunity: dict) -> dict:
         if not isinstance(opportunity, dict):
             return {"status": "BLOCKED", "reason": "Opportunity must be an object."}
-        if LIVE_TRADING and self.mode == "LIVE":
+        # Enforce the executor's own mode as well as global configuration.
+        # This prevents a directly constructed LIVE executor from bypassing the
+        # token gate when the module was imported while TRADING_MODE=PAPER.
+        if str(self.mode).upper() == "LIVE":
             if not os.getenv("LIVE_API_TOKEN", "").strip():
                 return {"status": "BLOCKED", "reason": "LIVE_API_TOKEN is required before any LIVE order can be submitted."}
             for ex_name in (opportunity.get("buy_exchange"), opportunity.get("sell_exchange")):
@@ -105,6 +315,12 @@ class TradeExecutor:
             return {"status": "BLOCKED", "reason": "Route must use two distinct execution-enabled exchanges."}
         if opportunity.get("execution_supported") is False:
             return {"status": "BLOCKED", "reason": "This route is discovery-only and cannot be executed."}
+
+        prepared = await self._prepare_execution_opportunity(opportunity)
+        if not prepared.get("allowed"):
+            return {"status": "BLOCKED", "reason": prepared.get("reason", "IOC preflight failed.")}
+        opportunity = prepared["opportunity"]
+
         try:
             sell_price_check = float(opportunity.get("sell_price"))
             expected_net = float(opportunity.get("net_profit_usd"))
@@ -134,18 +350,25 @@ class TradeExecutor:
         position_id = self.position_manager.create_position(symbol, buy_ex, sell_ex, quantity)
 
         buy_order_res = await self.order_manager.create_order(buy_ex, symbol, "buy", quantity, buy_price)
-        buy_status = buy_order_res.get("status", "UNKNOWN")
-        bought_filled = float(buy_order_res.get("filled_amount", 0.0) or 0.0)
+        buy_status = str(buy_order_res.get("status", "UNKNOWN")).upper()
+        bought_filled = self._parse_fill_amount(buy_order_res, quantity)
         if buy_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             checked_buy = await self.order_manager.resolve_order(buy_ex, symbol, buy_order_res)
             buy_order_res = {**buy_order_res, **checked_buy}
             buy_status = str(buy_order_res.get("status", "UNKNOWN")).upper()
-            bought_filled = float(buy_order_res.get("filled_amount", 0.0) or 0.0)
+            bought_filled = self._parse_fill_amount(buy_order_res, quantity)
         if buy_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             self.position_manager.set_position_status(position_id, "UNRESOLVED")
             return {
                 "status": "UNRESOLVED",
                 "reason": "Buy order remains unconfirmed after status checks and cancellation attempt; no second order was submitted.",
+                "buy_order": buy_order_res,
+            }
+        if not math.isfinite(bought_filled) or bought_filled < 0 or bought_filled > quantity + 1e-9:
+            self.position_manager.set_position_status(position_id, "UNRESOLVED")
+            return {
+                "status": "UNRESOLVED",
+                "reason": "Buy order returned an invalid or out-of-range filled amount; exposure requires reconciliation.",
                 "buy_order": buy_order_res,
             }
         # A canceled/expired IOC order can still have a confirmed partial fill.
@@ -154,15 +377,37 @@ class TradeExecutor:
             self.position_manager.set_position_status(position_id, buy_status)
             return {"status": "FAILED", "reason": f"Buy order has no confirmed fill (status {buy_status})", "buy_order": buy_order_res}
 
-        self.position_manager.update_leg_fill(position_id, "buy", bought_filled, buy_order_res.get("avg_price", buy_price))
-        sell_order_res = await self.order_manager.create_order(sell_ex, symbol, "sell", bought_filled, sell_price)
-        sell_status = sell_order_res.get("status", "UNKNOWN")
-        sold_filled = float(sell_order_res.get("filled_amount", 0.0) or 0.0)
+        realized_buy_price = self._reported_execution_price(buy_order_res, buy_price)
+        if not math.isfinite(realized_buy_price) or realized_buy_price <= 0:
+            self.position_manager.set_position_status(position_id, "UNRESOLVED")
+            return {
+                "status": "UNRESOLVED",
+                "reason": "Buy fill was reported with an invalid average execution price; position requires reconciliation.",
+                "buy_order": buy_order_res,
+            }
+        self.position_manager.update_leg_fill(position_id, "buy", bought_filled, realized_buy_price)
+        sell_quantity = await self._sellable_quantity(
+            self.exchanges[sell_ex], symbol, bought_filled, sell_price
+        )
+        if sell_quantity <= 0:
+            self.position_manager.set_position_status(position_id, "PARTIALLY_FILLED")
+            recovery_result = await self.recovery_engine.handle_exposure(
+                position_id, buy_ex, symbol, bought_filled, "buy"
+            )
+            return {
+                "status": "PARTIAL_RECOVERY",
+                "sold_filled": 0.0,
+                "reason": "Buy fill is below the sell venue's valid lot/minimum order size; exposure sent to recovery.",
+                "recovery": recovery_result,
+            }
+        sell_order_res = await self.order_manager.create_order(sell_ex, symbol, "sell", sell_quantity, sell_price)
+        sell_status = str(sell_order_res.get("status", "UNKNOWN")).upper()
+        sold_filled = self._parse_fill_amount(sell_order_res, sell_quantity)
         if sell_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             checked_sell = await self.order_manager.resolve_order(sell_ex, symbol, sell_order_res)
             sell_order_res = {**sell_order_res, **checked_sell}
             sell_status = str(sell_order_res.get("status", "UNKNOWN")).upper()
-            sold_filled = float(sell_order_res.get("filled_amount", 0.0) or 0.0)
+            sold_filled = self._parse_fill_amount(sell_order_res, sell_quantity)
         if sell_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             self.position_manager.set_position_status(position_id, "UNRESOLVED")
             # Do not place a recovery order while the original sell might still fill.
@@ -173,8 +418,25 @@ class TradeExecutor:
                 "sell_order": sell_order_res,
                 "buy_order": buy_order_res,
             }
+        if not math.isfinite(sold_filled) or sold_filled < 0 or sold_filled > sell_quantity + 1e-9:
+            self.position_manager.set_position_status(position_id, "UNRESOLVED")
+            return {
+                "status": "UNRESOLVED",
+                "reason": "Sell order returned an invalid or out-of-range filled amount; exposure requires reconciliation.",
+                "sell_order": sell_order_res,
+                "buy_order": buy_order_res,
+            }
 
-        self.position_manager.update_leg_fill(position_id, "sell", sold_filled, sell_order_res.get("avg_price", sell_price))
+        realized_sell_price = self._reported_execution_price(sell_order_res, sell_price)
+        if not math.isfinite(realized_sell_price) or realized_sell_price <= 0:
+            self.position_manager.set_position_status(position_id, "UNRESOLVED")
+            return {
+                "status": "UNRESOLVED",
+                "reason": "Sell fill was reported with an invalid average execution price; position requires reconciliation.",
+                "buy_order": buy_order_res,
+                "sell_order": sell_order_res,
+            }
+        self.position_manager.update_leg_fill(position_id, "sell", sold_filled, realized_sell_price)
         if sold_filled < bought_filled:
             self.position_manager.set_position_status(position_id, "PARTIALLY_FILLED")
             recovery_result = await self.recovery_engine.handle_exposure(position_id, buy_ex, symbol, bought_filled - sold_filled, "buy")
@@ -182,9 +444,7 @@ class TradeExecutor:
 
         realized_buy_fee = buy_order_res.get("fee_usd")
         realized_sell_fee = sell_order_res.get("fee_usd")
-        realized_buy_price = float(buy_order_res.get("avg_price", buy_price))
-        realized_sell_price = float(sell_order_res.get("avg_price", sell_price))
-        other_costs = float(opportunity.get("other_costs_usd", 0.0))
+        other_costs = float(opportunity.get("other_costs_usd", OTHER_COSTS_USD))
         if realized_buy_fee is not None and realized_sell_fee is not None:
             # PAPER adapters report the fees actually deducted from each fill.
             # Use those values rather than re-estimating from a configured rate.

@@ -215,7 +215,9 @@ class MarketScanner(MarketDataProvider):
                     diagnostic["below_minimum_size_routes"] += 1
                     continue
 
-                liquidity_ok = bool(buy_ok and sell_ok)
+                # The requested capital may exceed visible depth; execution is still valid for the smaller qty selected above.
+                # _vwap_for_qty already confirmed both books can fill this exact qty.
+                liquidity_ok = bool(buy_filled_qty + 1e-9 >= qty and sell_filled_qty + 1e-9 >= qty)
                 item = {
                     "symbol": symbol,
                     "buy_exchange": buy,

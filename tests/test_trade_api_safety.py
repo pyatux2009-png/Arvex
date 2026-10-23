@@ -47,9 +47,6 @@ async def test_executor_blocks_non_usdt_symbol():
 
 @pytest.mark.asyncio
 async def test_executor_blocks_live_mode_without_live_api_token(monkeypatch):
-    import app.trading.executor as executor_module
-
-    monkeypatch.setattr(executor_module, "LIVE_TRADING", True)
     monkeypatch.delenv("LIVE_API_TOKEN", raising=False)
     executor = TradeExecutor({}, mode="LIVE")
     result = await executor.execute_arbitrage({})
