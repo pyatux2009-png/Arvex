@@ -136,3 +136,35 @@ async def test_execution_blocks_incomplete_or_invalid_market_rules(bad_rules, re
 
     assert result["allowed"] is False
     assert reason in result["reason"]
+
+
+
+@pytest.mark.asyncio
+async def test_execution_preserves_configured_other_costs_when_recalculating(monkeypatch):
+    from app.trading import executor as executor_module
+
+    monkeypatch.setattr(executor_module, "OTHER_COSTS_USD", 10.0)
+    rules = {
+        "status": "TRADING",
+        "min_qty": 0.001,
+        "qty_step": 0.001,
+        "tick_size": 0.01,
+        "min_notional": 5.0,
+    }
+    executor = TradeExecutor({
+        "binance": RulesExchange(rules),
+        "bybit": RulesExchange(rules),
+    }, mode="PAPER")
+
+    result = await executor._prepare_execution_opportunity({
+        "symbol": "BTCUSDT",
+        "buy_exchange": "binance",
+        "sell_exchange": "bybit",
+        "quantity": 0.1,
+        "buy_order_price": 100.0,
+        "sell_order_price": 103.0,
+        "slippage_pct": 0.01,
+    })
+
+    assert result["allowed"] is False
+    assert "non-positive" in result["reason"]
