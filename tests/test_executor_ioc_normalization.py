@@ -1,3 +1,4 @@
+import math
 import pytest
 
 from app.trading.executor import TradeExecutor
@@ -294,3 +295,22 @@ async def test_partial_buy_fill_is_rounded_to_sell_venue_step_before_hedging():
     assert binance.submissions[1][0] == "sell"
     assert binance.submissions[1][1] == pytest.approx(0.005)
     assert result["recovery"]["status"] == "RECOVERED"
+
+
+
+def test_executor_fill_parser_rejects_fill_above_submitted_sell_quantity():
+    assert math.isnan(TradeExecutor._parse_fill_amount(
+        {"status": "FILLED", "filled_amount": 0.015},
+        0.01,
+    ))
+
+
+def test_executor_fill_parser_rejects_non_finite_execution_values():
+    assert math.isnan(TradeExecutor._parse_fill_amount(
+        {"status": "FILLED", "filled_amount": float("inf")},
+        1.0,
+    ))
+    assert math.isnan(TradeExecutor._reported_execution_price(
+        {"avg_price": float("nan")},
+        100.0,
+    ))
