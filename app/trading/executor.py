@@ -76,6 +76,15 @@ class TradeExecutor:
             return {"status": "BLOCKED", "reason": "Route must use two distinct execution-enabled exchanges."}
         if opportunity.get("execution_supported") is False:
             return {"status": "BLOCKED", "reason": "This route is discovery-only and cannot be executed."}
+        try:
+            sell_price_check = float(opportunity.get("sell_price"))
+            expected_net = float(opportunity.get("net_profit_usd"))
+            if not math.isfinite(sell_price_check) or sell_price_check <= 0:
+                raise ValueError("sell_price must be finite and positive")
+            if not math.isfinite(expected_net) or expected_net <= 0:
+                raise ValueError("net_profit_usd must be finite and positive")
+        except (TypeError, ValueError) as exc:
+            return {"status": "BLOCKED", "reason": f"Invalid trade economics: {exc}"}
         safety_check = self.safety_engine.validate_opportunity(opportunity)
         if not safety_check.get("allowed", False):
             return {"status": "BLOCKED", "reason": f"Safety check failed: {safety_check.get('reason')}"}
