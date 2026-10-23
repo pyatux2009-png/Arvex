@@ -48,6 +48,47 @@ class TradeExecutor:
         return Decimal((ai * bi) // gcd(ai, bi)) / Decimal(scale)
 
     @staticmethod
+    def _floor_quantity_to_step(quantity: float, step: float) -> Decimal:
+        """Round a quantity down to a positive exchange lot increment."""
+        value = Decimal(str(quantity))
+        increment = Decimal(str(step))
+        if not value.is_finite() or not increment.is_finite() or value <= 0 or increment <= 0:
+            return Decimal("0")
+        return (value / increment).to_integral_value(rounding=ROUND_FLOOR) * increment
+
+    async def _sellable_quantity(self, exchange, symbol: str, amount: float, price: float) -> float:
+        """Return only the amount the sell venue can accept, or zero if rules are uncertain."""
+        get_rules = getattr(exchange, "get_market_rules", None)
+        if not callable(get_rules):
+            return 0.0
+        try:
+            rules = await get_rules(symbol)
+            if not isinstance(rules, dict):
+                return 0.0
+            required = {"status", "min_qty", "qty_step", "tick_size", "min_notional"}
+            if not required.issubset(rules):
+                return 0.0
+            if str(rules["status"]).upper() not in {"TRADING", "TRADINGSTATUS", "ENABLED"}:
+                return 0.0
+            min_qty = float(rules["min_qty"])
+            qty_step = float(rules["qty_step"])
+            tick_size = float(rules["tick_size"])
+            min_notional = float(rules["min_notional"])
+            if (
+                not all(math.isfinite(v) for v in (min_qty, qty_step, tick_size, min_notional, amount, price))
+                or min_qty < 0 or qty_step <= 0 or tick_size <= 0 or min_notional < 0
+                or amount <= 0 or price <= 0
+            ):
+                return 0.0
+            quantity = self._floor_quantity_to_step(amount, qty_step)
+            if float(quantity) + 1e-12 < min_qty or float(quantity) * price + 1e-9 < min_notional:
+                return 0.0
+            return float(quantity)
+        except Exception as exc:
+            logger.warning("Could not verify sell quantity rules for %s: %s", symbol, exc)
+            return 0.0
+
+    @staticmethod
     def _round_price_to_tick(price: float, tick: float, *, round_up: bool) -> float:
         value = Decimal(str(price))
         increment = Decimal(str(tick or 0))
@@ -122,6 +163,20 @@ class TradeExecutor:
         sell_price = self._round_price_to_tick(sell_price, float(sell_rules.get("tick_size", 0) or 0), round_up=False)
         if not math.isfinite(buy_price) or not math.isfinite(sell_price) or buy_price <= 0 or sell_price <= 0:
             return {"allowed": False, "reason": "Normalized IOC limit prices are invalid."}
+
+        # IOC buy limits can be above the VWAP used by the scanner. Keep the
+        # actual worst-case buy notional within both the requested size and cap.
+        try:
+            requested_position_size = float(prepared.get("position_size", float(quantity) * buy_price))
+            if not math.isfinite(requested_position_size) or requested_position_size <= 0:
+                raise ValueError("position_size must be finite and positive")
+            capital_cap = min(float(MAX_TRADE_SIZE_USD), requested_position_size)
+            max_quantity = self._floor_quantity_to_step(capital_cap / buy_price, float(common_step))
+            quantity = min(quantity, max_quantity)
+        except (TypeError, ValueError, ArithmeticError) as exc:
+            return {"allowed": False, "reason": f"Could not enforce trade-size cap after IOC rounding: {exc}"}
+        if quantity <= 0:
+            return {"allowed": False, "reason": "Quantity rounds to zero under the IOC price and trade-size cap."}
 
         try:
             metrics = calculate_net_profit(
@@ -286,7 +341,21 @@ class TradeExecutor:
             return {"status": "FAILED", "reason": f"Buy order has no confirmed fill (status {buy_status})", "buy_order": buy_order_res}
 
         self.position_manager.update_leg_fill(position_id, "buy", bought_filled, buy_order_res.get("avg_price", buy_price))
-        sell_order_res = await self.order_manager.create_order(sell_ex, symbol, "sell", bought_filled, sell_price)
+        sell_quantity = await self._sellable_quantity(
+            self.exchanges[sell_ex], symbol, bought_filled, sell_price
+        )
+        if sell_quantity <= 0:
+            self.position_manager.set_position_status(position_id, "PARTIALLY_FILLED")
+            recovery_result = await self.recovery_engine.handle_exposure(
+                position_id, buy_ex, symbol, bought_filled, "buy"
+            )
+            return {
+                "status": "PARTIAL_RECOVERY",
+                "sold_filled": 0.0,
+                "reason": "Buy fill is below the sell venue's valid lot/minimum order size; exposure sent to recovery.",
+                "recovery": recovery_result,
+            }
+        sell_order_res = await self.order_manager.create_order(sell_ex, symbol, "sell", sell_quantity, sell_price)
         sell_status = sell_order_res.get("status", "UNKNOWN")
         sold_filled = float(sell_order_res.get("filled_amount", 0.0) or 0.0)
         if sell_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
