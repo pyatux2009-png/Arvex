@@ -74,6 +74,10 @@ class TradingEngine:
                             continue
                         if opportunity.get("net_profit_usd", 0.0) <= 0:
                             continue
+                        # Discovery-only venues (OKX/Kraken at this stage) must never
+                        # reach the execution adapter, even if auto-execute is enabled.
+                        if opportunity.get("execution_supported", True) is False:
+                            continue
                         result = await self.executor.execute_arbitrage(opportunity)
                         self.last_result = result
                         self.last_execution_at = time.time()
