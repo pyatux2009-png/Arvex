@@ -50,7 +50,7 @@ async def test_execution_normalizes_ioc_prices_and_compatible_quantity_steps():
 async def test_execution_blocks_route_if_conservative_ioc_prices_erase_profit():
     exchanges = {
         "binance": RulesExchange({"status": "TRADING", "min_qty": 0.001, "qty_step": 0.001, "tick_size": 0.01, "min_notional": 5.0}),
-        "bybit": RulesExchange({"qty_step": 0.001, "tick_size": 0.01}),
+        "bybit": RulesExchange({"status": "TRADING", "min_qty": 0.001, "qty_step": 0.001, "tick_size": 0.01, "min_notional": 5.0}),
     }
     executor = TradeExecutor(exchanges, mode="PAPER")
     result = await executor._prepare_execution_opportunity({
