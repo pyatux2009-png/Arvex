@@ -14,6 +14,9 @@ This repository is the backend foundation for a spot inter-exchange arbitrage bo
 - Net ROI uses the same buy-capital denominator as net USD P&L.
 - Configurable exchange fees, slippage and other costs.
 - Safety Engine with size, loss, profit, liquidity and stale-book limits.
+- Manual trade endpoint re-scans server-side and does not trust client-supplied PnL, prices, quantity, liquidity or risk fields.
+- Binance/Bybit execution preflight checks cached market status, quantity step, minimum quantity/notional and price tick rules; metadata errors block execution.
+- LIVE order submission fails closed unless `LIVE_API_TOKEN` is configured; manual LIVE requests must send it as `X-API-Token`.
 - Continuous `TradingEngine` scanner/executor loop.
 - Optional automatic execution controlled by `AUTO_EXECUTE`.
 - Strict order-state handling: unknown execution is never treated as filled.
@@ -32,7 +35,7 @@ Transfers are not used as the critical path of an arbitrage trade because blockc
 
 - `SCAN`: inspect opportunities without execution.
 - `PAPER`: real public market data can be used by the runtime, while orders are simulated locally.
-- `LIVE`: requires exchange credentials and `AUTO_EXECUTE=true`; it is intentionally opt-in.
+- `LIVE`: requires exchange credentials and `AUTO_EXECUTE=true`; manual LIVE requests additionally require `LIVE_API_TOKEN` in the `X-API-Token` header. The executor also blocks LIVE submission when the token is absent. Keep LIVE disabled until the complete order-price/lot-size path has passed exchange-specific smoke tests.
 
 For safety, keep `AUTO_EXECUTE=false` until PAPER results are understood. OKX/Kraken results are discovery-only; a displayed positive estimate is not an executable trade and can change before execution. Set exchange fee estimates to your actual account tier in `.env`.
 
@@ -69,4 +72,4 @@ python -m compileall -q app tests
 pytest -q
 ```
 
-Do not put API secrets into source code or commit `.env`.
+Do not put API secrets into source code or commit `.env`. `LIVE_API_TOKEN` is a local secret and must never be committed.

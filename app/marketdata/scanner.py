@@ -88,6 +88,20 @@ class MarketScanner(MarketDataProvider):
                 break
         return (spent / qty if qty else 0.0), qty, remaining <= 1e-9
 
+    @staticmethod
+    def _worst_price_for_qty(side, target_qty):
+        """Return the worst price touched to fill target_qty from this book side."""
+        remaining = float(target_qty)
+        for price, amount in side:
+            price, amount = float(price), float(amount)
+            if price <= 0 or amount <= 0:
+                continue
+            take = min(amount, remaining)
+            remaining -= take
+            if remaining <= 1e-9:
+                return price
+        return 0.0
+
     async def scan_opportunities(self, symbol, target_capital_usd=50.0):
         symbol = str(symbol).upper()
         target_capital_usd = float(target_capital_usd)
@@ -169,7 +183,9 @@ class MarketScanner(MarketDataProvider):
                     continue
                 buy_vwap, buy_filled_qty, buy_ok = self._vwap_for_qty(buy_book["asks"], qty)
                 sell_vwap, sell_filled_qty, sell_ok = self._vwap_for_qty(sell_book["bids"], qty)
-                if buy_vwap <= 0 or sell_vwap <= 0 or buy_filled_qty + 1e-9 < qty or sell_filled_qty + 1e-9 < qty:
+                buy_order_price = self._worst_price_for_qty(buy_book["asks"], qty)
+                sell_order_price = self._worst_price_for_qty(sell_book["bids"], qty)
+                if buy_vwap <= 0 or sell_vwap <= 0 or buy_order_price <= 0 or sell_order_price <= 0 or buy_filled_qty + 1e-9 < qty or sell_filled_qty + 1e-9 < qty:
                     diagnostic["insufficient_liquidity_routes"] += 1
                     continue
 
@@ -206,6 +222,8 @@ class MarketScanner(MarketDataProvider):
                     "sell_exchange": sell,
                     "buy_price": buy_vwap,
                     "sell_price": sell_vwap,
+                    "buy_order_price": buy_order_price,
+                    "sell_order_price": sell_order_price,
                     "quantity": qty,
                     "position_size": position_size,
                     "liquidity_ok": liquidity_ok,

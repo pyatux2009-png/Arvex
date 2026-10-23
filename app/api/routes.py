@@ -1,5 +1,9 @@
+import hmac
+import os
+import math
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Query
+
+from fastapi import APIRouter, Header, HTTPException, Query
 from app.models.schemas import HealthCheckResponse
 from app.config import settings
 from app.runtime import get_runtime
@@ -46,6 +50,8 @@ async def opportunities(symbol: str = Query(default=None), capital_usd: float = 
     rt = get_runtime()
     symbol = (symbol or settings.symbols[0]).upper()
     capital = capital_usd or settings.max_trade_size_usd
+    if not math.isfinite(capital) or capital > settings.max_trade_size_usd:
+        raise HTTPException(400, f'capital_usd must not exceed safety limit of ${settings.max_trade_size_usd:.2f}')
     if symbol not in settings.symbols:
         raise HTTPException(400, f'Symbol {symbol} is not enabled')
     return {
@@ -62,10 +68,49 @@ async def live_opportunities():
 
 
 @router.post('/api/trade')
-async def execute_trade(opportunity: dict):
+async def execute_trade(opportunity: dict, x_api_token: str | None = Header(default=None)):
     rt = get_runtime()
-    result = await rt.executor.execute_arbitrage(opportunity)
+
+    # Live trading is fail-closed: it requires a separately configured secret.
+    # PAPER mode remains usable locally without a token.
+    if settings.live_trading:
+        configured_token = os.getenv('LIVE_API_TOKEN', '').strip()
+        if not configured_token:
+            raise HTTPException(503, 'LIVE trading is disabled until LIVE_API_TOKEN is configured.')
+        if not x_api_token or not hmac.compare_digest(x_api_token, configured_token):
+            raise HTTPException(401, 'Valid X-API-Token header required for LIVE trading.')
+
+    symbol = str(opportunity.get('symbol', '')).upper()
+    buy_exchange = str(opportunity.get('buy_exchange', '')).lower()
+    sell_exchange = str(opportunity.get('sell_exchange', '')).lower()
+    if symbol not in settings.symbols:
+        raise HTTPException(400, f'Symbol {symbol or "(missing)"} is not enabled')
+    if buy_exchange == sell_exchange or buy_exchange not in rt.trade_exchanges or sell_exchange not in rt.trade_exchanges:
+        raise HTTPException(400, 'Trade must use two distinct execution-enabled exchanges (Binance/Bybit).')
+
+    # Do not trust client-supplied prices, quantity, profit, liquidity or risk.
+    # Re-scan now and execute only a fresh server-generated candidate matching
+    # the requested route. The requested size is clamped to the configured cap.
+    try:
+        requested_capital = float(opportunity.get('position_size', rt.engine.capital_usd))
+    except (TypeError, ValueError):
+        raise HTTPException(400, 'position_size must be numeric')
+    if not math.isfinite(requested_capital) or requested_capital <= 0:
+        raise HTTPException(400, 'position_size must be finite and greater than zero')
+    capital = min(requested_capital, settings.max_trade_size_usd)
+    fresh_candidates = await rt.scanner.scan_opportunities(symbol, capital)
+    fresh = next((
+        item for item in fresh_candidates
+        if item.get('buy_exchange') == buy_exchange
+        and item.get('sell_exchange') == sell_exchange
+        and item.get('execution_supported') is True
+    ), None)
+    if fresh is None:
+        raise HTTPException(409, 'The requested route is no longer a fresh, profitable, executable opportunity.')
+
+    result = await rt.executor.execute_arbitrage(fresh)
     return result
+
 
 @router.get('/api/settings')
 async def get_settings():
@@ -86,8 +131,8 @@ async def set_capital(payload: dict):
         capital = float(payload.get('capital_usd'))
     except (TypeError, ValueError):
         raise HTTPException(400, 'capital_usd must be a number')
-    if capital <= 0:
-        raise HTTPException(400, 'capital_usd must be greater than 0')
+    if not math.isfinite(capital) or capital <= 0:
+        raise HTTPException(400, 'capital_usd must be finite and greater than 0')
     if capital > settings.max_trade_size_usd:
         raise HTTPException(400, f'capital_usd exceeds safety limit of ${settings.max_trade_size_usd:.2f}')
     rt.engine.capital_usd = capital

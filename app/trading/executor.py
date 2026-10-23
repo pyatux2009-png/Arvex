@@ -6,7 +6,9 @@ from app.recovery.engine import RecoveryEngine
 from app.safety.engine import SafetyEngine
 from app.portfolio.inventory import InventoryManager
 from app.arbitrage.profitability import calculate_net_profit, calculate_realized_profit
-from app.config import LIVE_TRADING
+from app.config import LIVE_TRADING, EXCHANGE_FEES, MAX_TRADE_SIZE_USD
+import math
+import os
 
 logger = logging.getLogger("TradeExecutor")
 
@@ -31,11 +33,50 @@ class TradeExecutor:
     async def _preflight_balances(self, opportunity: dict) -> dict:
         symbol = opportunity["symbol"]
         base, quote = self._assets(symbol)
+        if not quote or quote != "USDT":
+            return {"allowed": False, "reason": "Only USDT-quoted spot symbols are supported for execution."}
         amount = float(opportunity["quantity"])
-        buy_cost = amount * float(opportunity["buy_price"])
-        buy_fee = buy_cost * float(opportunity.get("buy_fee", 0.001))
+        buy_price = float(opportunity["buy_price"])
+        if not all(math.isfinite(value) for value in (amount, buy_price)) or amount <= 0 or buy_price <= 0:
+            return {"allowed": False, "reason": "Quantity and buy price must be finite positive numbers."}
+        buy_cost = amount * buy_price
+        buy_fee_rate = EXCHANGE_FEES.get(opportunity["buy_exchange"], {}).get("taker")
+        if buy_fee_rate is None:
+            return {"allowed": False, "reason": "No configured taker fee for buy exchange."}
+        buy_fee = buy_cost * buy_fee_rate
         sell_ex = self.exchanges[opportunity["sell_exchange"]]
         buy_ex = self.exchanges[opportunity["buy_exchange"]]
+        if buy_cost > MAX_TRADE_SIZE_USD + 1e-9:
+            return {"allowed": False, "reason": f"Trade size exceeds configured maximum of ${MAX_TRADE_SIZE_USD:.2f}."}
+        # Validate against live exchange metadata whenever the adapter supports it.
+        # If metadata retrieval fails, fail closed rather than submit an order likely to be rejected.
+        for exchange_name, exchange, price in (
+            (opportunity["buy_exchange"], buy_ex, buy_price),
+            (opportunity["sell_exchange"], sell_ex, float(opportunity.get("sell_price", 0.0))),
+        ):
+            get_rules = getattr(exchange, "get_market_rules", None)
+            if get_rules is None:
+                continue
+            try:
+                rules = await get_rules(symbol)
+            except Exception as exc:
+                return {"allowed": False, "reason": f"Could not verify {exchange_name} market rules: {exc}"}
+            status = str(rules.get("status", "TRADING")).upper()
+            if status not in {"TRADING", "TRADINGSTATUS", "ENABLED"}:
+                return {"allowed": False, "reason": f"{symbol} is not trading on {exchange_name} (status {status})."}
+            min_qty = float(rules.get("min_qty", 0.0) or 0.0)
+            qty_step = float(rules.get("qty_step", 0.0) or 0.0)
+            tick_size = float(rules.get("tick_size", 0.0) or 0.0)
+            min_notional = float(rules.get("min_notional", 0.0) or 0.0)
+            if amount + 1e-12 < min_qty:
+                return {"allowed": False, "reason": f"Quantity is below {exchange_name} minimum quantity {min_qty}."}
+            if qty_step > 0 and not math.isclose(amount / qty_step, round(amount / qty_step), rel_tol=0.0, abs_tol=1e-7):
+                return {"allowed": False, "reason": f"Quantity does not match {exchange_name} quantity step {qty_step}."}
+            if tick_size > 0 and not math.isclose(price / tick_size, round(price / tick_size), rel_tol=0.0, abs_tol=1e-7):
+                return {"allowed": False, "reason": f"Price does not match {exchange_name} tick size {tick_size}."}
+            if min_notional > 0 and amount * price + 1e-9 < min_notional:
+                return {"allowed": False, "reason": f"Order value is below {exchange_name} minimum notional {min_notional}."}
+
         buy_bal = await buy_ex.get_balance()
         sell_bal = await sell_ex.get_balance()
         if quote and float(buy_bal.get(quote, 0.0)) + 1e-9 < buy_cost + buy_fee:
@@ -45,12 +86,34 @@ class TradeExecutor:
         return {"allowed": True, "reason": "OK"}
 
     async def execute_arbitrage(self, opportunity: dict) -> dict:
+        if not isinstance(opportunity, dict):
+            return {"status": "BLOCKED", "reason": "Opportunity must be an object."}
         if LIVE_TRADING and self.mode == "LIVE":
+            if not os.getenv("LIVE_API_TOKEN", "").strip():
+                return {"status": "BLOCKED", "reason": "LIVE_API_TOKEN is required before any LIVE order can be submitted."}
             for ex_name in (opportunity.get("buy_exchange"), opportunity.get("sell_exchange")):
                 ex = self.exchanges.get(ex_name)
                 if not ex or getattr(ex, "paper_mode", True) or not getattr(ex, "api_key", None):
                     return {"status": "BLOCKED", "reason": f"LIVE trading requires valid API credentials for {ex_name}."}
 
+        symbol = str(opportunity.get("symbol", "")).upper()
+        buy_exchange = str(opportunity.get("buy_exchange", "")).lower()
+        sell_exchange = str(opportunity.get("sell_exchange", "")).lower()
+        if not symbol.endswith("USDT") or symbol == "USDT":
+            return {"status": "BLOCKED", "reason": "Only USDT-quoted spot symbols are supported."}
+        if buy_exchange == sell_exchange or buy_exchange not in self.exchanges or sell_exchange not in self.exchanges:
+            return {"status": "BLOCKED", "reason": "Route must use two distinct execution-enabled exchanges."}
+        if opportunity.get("execution_supported") is False:
+            return {"status": "BLOCKED", "reason": "This route is discovery-only and cannot be executed."}
+        try:
+            sell_price_check = float(opportunity.get("sell_price"))
+            expected_net = float(opportunity.get("net_profit_usd"))
+            if not math.isfinite(sell_price_check) or sell_price_check <= 0:
+                raise ValueError("sell_price must be finite and positive")
+            if not math.isfinite(expected_net) or expected_net <= 0:
+                raise ValueError("net_profit_usd must be finite and positive")
+        except (TypeError, ValueError) as exc:
+            return {"status": "BLOCKED", "reason": f"Invalid trade economics: {exc}"}
         safety_check = self.safety_engine.validate_opportunity(opportunity)
         if not safety_check.get("allowed", False):
             return {"status": "BLOCKED", "reason": f"Safety check failed: {safety_check.get('reason')}"}

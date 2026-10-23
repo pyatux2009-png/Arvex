@@ -16,6 +16,32 @@ class BinanceExchange(BaseExchange):
         if testnet: self.REST = "https://testnet.binance.vision"
         self.orderbooks={}; self.orders={}; self._last_rest_refresh={}
         self.balances={"USDT":10000.0,"BTC":1.0,"ETH":10.0} if paper_mode else {}
+        self._market_rules = {}
+
+    async def get_market_rules(self, symbol):
+        """Fetch Binance spot lot, tick and notional filters; cache for one hour."""
+        symbol = str(symbol).upper()
+        cached = self._market_rules.get(symbol)
+        if cached and time.time() - cached["timestamp"] < 3600:
+            return cached["rules"]
+        data = await request_json("GET", self.REST + "/api/v3/exchangeInfo", params={"symbol": symbol})
+        rows = data.get("symbols") or []
+        if not rows:
+            raise ValueError(f"Binance has no spot market metadata for {symbol}")
+        row = rows[0]
+        filters = {item.get("filterType"): item for item in row.get("filters", [])}
+        lot = filters.get("LOT_SIZE", {})
+        price = filters.get("PRICE_FILTER", {})
+        notional = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
+        rules = {
+            "min_qty": float(lot.get("minQty", 0) or 0),
+            "qty_step": float(lot.get("stepSize", 0) or 0),
+            "tick_size": float(price.get("tickSize", 0) or 0),
+            "min_notional": float(notional.get("minNotional", 0) or 0),
+            "status": row.get("status"),
+        }
+        self._market_rules[symbol] = {"timestamp": time.time(), "rules": rules}
+        return rules
     def _signed(self, params):
         p=dict(params); p["timestamp"]=int(time.time()*1000); p.setdefault("recvWindow",5000)
         qs=urllib.parse.urlencode(p)

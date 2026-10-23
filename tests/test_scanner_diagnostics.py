@@ -181,3 +181,20 @@ def test_kraken_websocket_book_merge_updates_and_deletes_levels():
     )
 
     assert updated == [[100.0, 1.0], [98.0, 3.0]]
+
+
+
+@pytest.mark.asyncio
+async def test_scanner_emits_worst_book_prices_for_ioc_limits():
+    exchanges = {
+        "binance": FakeExchange([[99.0, 10]], [[100.0, 10], [101.0, 10]]),
+        "bybit": FakeExchange([[103.0, 10], [102.0, 10]], [[104.0, 10]]),
+    }
+    scanner = MarketScanner(exchanges, estimated_slippage_pct=0.01, execution_exchanges={"binance", "bybit"})
+    opportunities = await scanner.scan_opportunities("BTCUSDT", 50)
+
+    route = next(item for item in opportunities if item["buy_exchange"] == "binance" and item["sell_exchange"] == "bybit")
+    assert route["buy_price"] == pytest.approx(100.0)
+    assert route["sell_price"] == pytest.approx(103.0)
+    assert route["buy_order_price"] == pytest.approx(100.0)
+    assert route["sell_order_price"] == pytest.approx(103.0)
