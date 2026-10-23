@@ -21,3 +21,6 @@ frontend/tsconfig.tsbuildinfo
 # Editors
 .vscode/
 .idea/
+
+# Local persistent operational safety state (never commit runtime state)
+arvex_state.json
