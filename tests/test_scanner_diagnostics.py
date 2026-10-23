@@ -198,3 +198,29 @@ async def test_scanner_emits_worst_book_prices_for_ioc_limits():
     assert route["sell_price"] == pytest.approx(103.0)
     assert route["buy_order_price"] == pytest.approx(100.0)
     assert route["sell_order_price"] == pytest.approx(103.0)
+
+
+
+@pytest.mark.asyncio
+async def test_scanner_accepts_route_when_depth_covers_smaller_selected_trade():
+    # Both books have only about $10 of depth, below the requested $50 capital.
+    # The scanner reduces quantity to available depth, so this selected size is liquid.
+    exchanges = {
+        "binance": FakeExchange([[99.0, 0.1]], [[100.0, 0.1]]),
+        "bybit": FakeExchange([[103.0, 0.1]], [[104.0, 0.1]]),
+    }
+    scanner = MarketScanner(
+        exchanges,
+        estimated_slippage_pct=0.01,
+        execution_exchanges={"binance", "bybit"},
+    )
+
+    opportunities = await scanner.scan_opportunities("BTCUSDT", 50.0)
+
+    route = next(
+        item for item in opportunities
+        if item["buy_exchange"] == "binance" and item["sell_exchange"] == "bybit"
+    )
+    assert route["quantity"] == pytest.approx(0.1)
+    assert route["position_size"] == pytest.approx(10.0)
+    assert route["liquidity_ok"] is True
