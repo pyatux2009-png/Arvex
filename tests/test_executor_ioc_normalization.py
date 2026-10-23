@@ -69,3 +69,70 @@ async def test_execution_blocks_route_if_conservative_ioc_prices_erase_profit():
 
     assert result["allowed"] is False
     assert "non-positive" in result["reason"]
+
+
+
+@pytest.mark.asyncio
+async def test_execution_blocks_when_exchange_adapter_has_no_market_rules():
+    class MissingRulesExchange:
+        pass
+
+    executor = TradeExecutor({
+        "binance": MissingRulesExchange(),
+        "bybit": RulesExchange({
+            "status": "TRADING",
+            "min_qty": 0.001,
+            "qty_step": 0.001,
+            "tick_size": 0.01,
+            "min_notional": 5.0,
+        }),
+    }, mode="PAPER")
+    result = await executor._prepare_execution_opportunity({
+        "symbol": "BTCUSDT",
+        "buy_exchange": "binance",
+        "sell_exchange": "bybit",
+        "quantity": 0.01,
+        "buy_order_price": 100.0,
+        "sell_order_price": 102.0,
+        "slippage_pct": 0.01,
+        "other_costs_usd": 0.0,
+    })
+
+    assert result["allowed"] is False
+    assert "does not provide required market rules" in result["reason"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bad_rules", "reason"),
+    [
+        ({"status": "TRADING", "min_qty": 0.001, "qty_step": 0.001, "tick_size": 0.01}, "missing required fields"),
+        ({"status": "HALT", "min_qty": 0.001, "qty_step": 0.001, "tick_size": 0.01, "min_notional": 5.0}, "not trading"),
+        ({"status": "TRADING", "min_qty": 0.001, "qty_step": 0.0, "tick_size": 0.01, "min_notional": 5.0}, "qty_step and tick_size"),
+    ],
+)
+async def test_execution_blocks_incomplete_or_invalid_market_rules(bad_rules, reason):
+    exchanges = {
+        "binance": RulesExchange(bad_rules),
+        "bybit": RulesExchange({
+            "status": "TRADING",
+            "min_qty": 0.001,
+            "qty_step": 0.001,
+            "tick_size": 0.01,
+            "min_notional": 5.0,
+        }),
+    }
+    executor = TradeExecutor(exchanges, mode="PAPER")
+    result = await executor._prepare_execution_opportunity({
+        "symbol": "BTCUSDT",
+        "buy_exchange": "binance",
+        "sell_exchange": "bybit",
+        "quantity": 0.01,
+        "buy_order_price": 100.0,
+        "sell_order_price": 102.0,
+        "slippage_pct": 0.01,
+        "other_costs_usd": 0.0,
+    })
+
+    assert result["allowed"] is False
+    assert reason in result["reason"]
