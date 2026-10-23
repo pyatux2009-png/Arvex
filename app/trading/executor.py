@@ -78,13 +78,32 @@ class TradeExecutor:
         rules_by_exchange = {}
         for name, exchange in ((buy_name, buy_ex), (sell_name, sell_ex)):
             get_rules = getattr(exchange, "get_market_rules", None)
-            if get_rules is None:
-                rules_by_exchange[name] = {}
-                continue
+            if not callable(get_rules):
+                return {
+                    "allowed": False,
+                    "reason": f"{name} adapter does not provide required market rules; execution blocked.",
+                }
             try:
                 rules = await get_rules(str(prepared.get("symbol", "")).upper())
                 if not isinstance(rules, dict):
                     raise ValueError("market rules response is not an object")
+                required = {"status", "min_qty", "qty_step", "tick_size", "min_notional"}
+                missing = required.difference(rules)
+                if missing:
+                    raise ValueError(f"market rules missing required fields: {', '.join(sorted(missing))}")
+                status = str(rules["status"]).upper()
+                if status not in {"TRADING", "TRADINGSTATUS", "ENABLED"}:
+                    return {
+                        "allowed": False,
+                        "reason": f"{prepared.get('symbol', '').upper()} is not trading on {name} (status {status}).",
+                    }
+                for key in ("min_qty", "qty_step", "tick_size", "min_notional"):
+                    value = float(rules[key])
+                    if not math.isfinite(value) or value < 0:
+                        raise ValueError(f"{key} must be finite and non-negative")
+                    rules[key] = value
+                if rules["qty_step"] <= 0 or rules["tick_size"] <= 0:
+                    raise ValueError("qty_step and tick_size must be greater than zero")
                 rules_by_exchange[name] = rules
             except Exception as exc:
                 return {"allowed": False, "reason": f"Could not verify {name} market rules: {exc}"}
@@ -153,10 +172,15 @@ class TradeExecutor:
             (opportunity["sell_exchange"], sell_ex, float(opportunity.get("sell_price", 0.0))),
         ):
             get_rules = getattr(exchange, "get_market_rules", None)
-            if get_rules is None:
-                continue
+            if not callable(get_rules):
+                return {
+                    "allowed": False,
+                    "reason": f"{exchange_name} adapter does not provide required market rules; execution blocked.",
+                }
             try:
                 rules = await get_rules(symbol)
+                if not isinstance(rules, dict):
+                    raise ValueError("market rules response is not an object")
             except Exception as exc:
                 return {"allowed": False, "reason": f"Could not verify {exchange_name} market rules: {exc}"}
             status = str(rules.get("status", "TRADING")).upper()
