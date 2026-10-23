@@ -26,6 +26,36 @@ class TradeExecutor:
         self.inventory = InventoryManager()
 
     @staticmethod
+    def _parse_fill_amount(order: dict, maximum: float) -> float:
+        """Return NaN for malformed or out-of-range exchange fill reports."""
+        if not isinstance(order, dict):
+            return float("nan")
+        try:
+            filled = float(order.get("filled_amount", 0.0) or 0.0)
+            maximum = float(maximum)
+        except (TypeError, ValueError):
+            return float("nan")
+        if not math.isfinite(filled) or not math.isfinite(maximum):
+            return float("nan")
+        if filled < 0 or maximum <= 0 or filled > maximum + 1e-9:
+            return float("nan")
+        return min(filled, maximum)
+
+    @staticmethod
+    def _reported_execution_price(order: dict, fallback: float) -> float:
+        """Use an exchange average price only when it is finite and positive."""
+        if not isinstance(order, dict):
+            return float("nan")
+        raw = order.get("avg_price")
+        if raw in (None, ""):
+            return float(fallback)
+        try:
+            price = float(raw)
+        except (TypeError, ValueError):
+            return float("nan")
+        return price if math.isfinite(price) and price > 0 else float("nan")
+
+    @staticmethod
     def _assets(symbol: str):
         symbol = symbol.upper()
         if symbol.endswith("USDT"):
@@ -321,15 +351,12 @@ class TradeExecutor:
 
         buy_order_res = await self.order_manager.create_order(buy_ex, symbol, "buy", quantity, buy_price)
         buy_status = str(buy_order_res.get("status", "UNKNOWN")).upper()
-        try:
-            bought_filled = float(buy_order_res.get("filled_amount", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            bought_filled = float("nan")
+        bought_filled = self._parse_fill_amount(buy_order_res, quantity)
         if buy_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             checked_buy = await self.order_manager.resolve_order(buy_ex, symbol, buy_order_res)
             buy_order_res = {**buy_order_res, **checked_buy}
             buy_status = str(buy_order_res.get("status", "UNKNOWN")).upper()
-            bought_filled = float(buy_order_res.get("filled_amount", 0.0) or 0.0)
+            bought_filled = self._parse_fill_amount(buy_order_res, quantity)
         if buy_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             self.position_manager.set_position_status(position_id, "UNRESOLVED")
             return {
@@ -350,7 +377,15 @@ class TradeExecutor:
             self.position_manager.set_position_status(position_id, buy_status)
             return {"status": "FAILED", "reason": f"Buy order has no confirmed fill (status {buy_status})", "buy_order": buy_order_res}
 
-        self.position_manager.update_leg_fill(position_id, "buy", bought_filled, float(buy_order_res.get("avg_price") or buy_price))
+        realized_buy_price = self._reported_execution_price(buy_order_res, buy_price)
+        if not math.isfinite(realized_buy_price) or realized_buy_price <= 0:
+            self.position_manager.set_position_status(position_id, "UNRESOLVED")
+            return {
+                "status": "UNRESOLVED",
+                "reason": "Buy fill was reported with an invalid average execution price; position requires reconciliation.",
+                "buy_order": buy_order_res,
+            }
+        self.position_manager.update_leg_fill(position_id, "buy", bought_filled, realized_buy_price)
         sell_quantity = await self._sellable_quantity(
             self.exchanges[sell_ex], symbol, bought_filled, sell_price
         )
@@ -367,15 +402,12 @@ class TradeExecutor:
             }
         sell_order_res = await self.order_manager.create_order(sell_ex, symbol, "sell", sell_quantity, sell_price)
         sell_status = str(sell_order_res.get("status", "UNKNOWN")).upper()
-        try:
-            sold_filled = float(sell_order_res.get("filled_amount", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            sold_filled = float("nan")
+        sold_filled = self._parse_fill_amount(sell_order_res, sell_quantity)
         if sell_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             checked_sell = await self.order_manager.resolve_order(sell_ex, symbol, sell_order_res)
             sell_order_res = {**sell_order_res, **checked_sell}
             sell_status = str(sell_order_res.get("status", "UNKNOWN")).upper()
-            sold_filled = float(sell_order_res.get("filled_amount", 0.0) or 0.0)
+            sold_filled = self._parse_fill_amount(sell_order_res, sell_quantity)
         if sell_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             self.position_manager.set_position_status(position_id, "UNRESOLVED")
             # Do not place a recovery order while the original sell might still fill.
@@ -386,7 +418,7 @@ class TradeExecutor:
                 "sell_order": sell_order_res,
                 "buy_order": buy_order_res,
             }
-        if not math.isfinite(sold_filled) or sold_filled < 0 or sold_filled > bought_filled + 1e-9:
+        if not math.isfinite(sold_filled) or sold_filled < 0 or sold_filled > sell_quantity + 1e-9:
             self.position_manager.set_position_status(position_id, "UNRESOLVED")
             return {
                 "status": "UNRESOLVED",
@@ -395,7 +427,16 @@ class TradeExecutor:
                 "buy_order": buy_order_res,
             }
 
-        self.position_manager.update_leg_fill(position_id, "sell", sold_filled, float(sell_order_res.get("avg_price") or sell_price))
+        realized_sell_price = self._reported_execution_price(sell_order_res, sell_price)
+        if not math.isfinite(realized_sell_price) or realized_sell_price <= 0:
+            self.position_manager.set_position_status(position_id, "UNRESOLVED")
+            return {
+                "status": "UNRESOLVED",
+                "reason": "Sell fill was reported with an invalid average execution price; position requires reconciliation.",
+                "buy_order": buy_order_res,
+                "sell_order": sell_order_res,
+            }
+        self.position_manager.update_leg_fill(position_id, "sell", sold_filled, realized_sell_price)
         if sold_filled < bought_filled:
             self.position_manager.set_position_status(position_id, "PARTIALLY_FILLED")
             recovery_result = await self.recovery_engine.handle_exposure(position_id, buy_ex, symbol, bought_filled - sold_filled, "buy")
@@ -403,8 +444,6 @@ class TradeExecutor:
 
         realized_buy_fee = buy_order_res.get("fee_usd")
         realized_sell_fee = sell_order_res.get("fee_usd")
-        realized_buy_price = float(buy_order_res.get("avg_price") or buy_price)
-        realized_sell_price = float(sell_order_res.get("avg_price") or sell_price)
         other_costs = float(opportunity.get("other_costs_usd", OTHER_COSTS_USD))
         if realized_buy_fee is not None and realized_sell_fee is not None:
             # PAPER adapters report the fees actually deducted from each fill.
