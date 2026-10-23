@@ -6,9 +6,12 @@ This repository is the backend foundation for a spot inter-exchange arbitrage bo
 
 - Binance Spot REST market data and authenticated order endpoints.
 - Bybit V5 Spot REST market data and authenticated order endpoints.
-- Binance and Bybit public WebSocket order-book streams.
+- Binance and Bybit public WebSocket order-book streams with REST fallback.
+- Read-only OKX and Kraken Spot order-book discovery; these venues are not enabled for execution.
 - Bybit snapshot/delta order-book merge.
 - Depth-aware VWAP and concrete trade-size profitability.
+- Per-symbol scanner diagnostics: book freshness, API errors, evaluated routes, gross-positive routes, cost-erased spreads and best gross candidate.
+- Net ROI uses the same buy-capital denominator as net USD P&L.
 - Configurable exchange fees, slippage and other costs.
 - Safety Engine with size, loss, profit, liquidity and stale-book limits.
 - Continuous `TradingEngine` scanner/executor loop.
@@ -31,7 +34,7 @@ Transfers are not used as the critical path of an arbitrage trade because blockc
 - `PAPER`: real public market data can be used by the runtime, while orders are simulated locally.
 - `LIVE`: requires exchange credentials and `AUTO_EXECUTE=true`; it is intentionally opt-in.
 
-For safety, keep `AUTO_EXECUTE=false` until PAPER results are understood.
+For safety, keep `AUTO_EXECUTE=false` until PAPER results are understood. OKX/Kraken results are discovery-only; a displayed positive estimate is not an executable trade and can change before execution. Set exchange fee estimates to your actual account tier in `.env`.
 
 ## Run
 
@@ -54,7 +57,7 @@ Endpoints:
 - `GET /api/health`
 - `GET /api/status`
 - `GET /api/opportunities?symbol=BTCUSDT&capital_usd=50`
-- `GET /api/opportunities/live`
+- `GET /api/opportunities/live` (includes per-symbol `diagnostics`)
 - `POST /api/engine/start`
 - `POST /api/engine/stop`
 - `POST /api/trade`
