@@ -2,13 +2,14 @@ import hashlib,hmac,json,time,uuid,os
 from typing import Dict,Any,Optional
 from app.exchanges.base import BaseExchange
 from app.exchanges.http import request_json
+from app.config import BOOK_MAX_AGE_SECONDS, EXCHANGE_FEES
 
 class BybitExchange(BaseExchange):
     REST="https://api.bybit.com"
     def __init__(self,api_key=None,api_secret=None,paper_mode=True,testnet=False,market_data_live=False):
         self.api_key=api_key or os.getenv("BYBIT_API_KEY"); self.api_secret=api_secret or os.getenv("BYBIT_API_SECRET"); self.paper_mode=paper_mode; self.testnet=testnet; self.market_data_live=market_data_live
         if testnet:self.REST="https://api-testnet.bybit.com"
-        self.orderbooks={}; self.orders={}; self.balances={"USDT":10000.0,"BTC":1.0,"ETH":10.0} if paper_mode else {}
+        self.orderbooks={}; self.orders={}; self._last_rest_refresh={}; self.balances={"USDT":10000.0,"BTC":1.0,"ETH":10.0} if paper_mode else {}
     def _paper_default_book(self,symbol):
         return {"symbol":symbol,"bids":[[99.0,10.0],[98.0,50.0]],"asks":[[100.0,10.0],[101.0,50.0]],"timestamp":time.time(),"source":"paper"}
 
@@ -21,16 +22,47 @@ class BybitExchange(BaseExchange):
     def _require(self):
         if not self.api_key or not self.api_secret: raise ValueError("Bybit API credentials missing")
     async def get_balance(self):
-        if self.paper_mode:return dict(self.balances)
-        self._require(); p={"accountType":"UNIFIED"}; d=await request_json("GET",self.REST+"/v5/account/wallet-balance",params=p,headers=self._headers("GET","/v5/account/wallet-balance",p)); self._ok(d); out={}
-        for c in d["result"]["list"][0].get("coin",[]): out[c["coin"]]=float(c.get("walletBalance",0)); return out
+        if self.paper_mode:
+            return dict(self.balances)
+        self._require()
+        params = {"accountType": "UNIFIED"}
+        data = await request_json(
+            "GET",
+            self.REST + "/v5/account/wallet-balance",
+            params=params,
+            headers=self._headers("GET", "/v5/account/wallet-balance", params),
+        )
+        self._ok(data)
+        balances = {}
+        accounts = data.get("result", {}).get("list", [])
+        for account in accounts:
+            for coin in account.get("coin", []):
+                balances[coin["coin"]] = float(coin.get("walletBalance", 0.0))
+        return balances
     async def get_order_book(self,symbol):
         symbol=symbol.upper()
-        if symbol in self.orderbooks:return self.orderbooks[symbol]
+        now=time.time()
+        cached=self.orderbooks.get(symbol)
+        if cached and now-float(cached.get("timestamp",0.0)) <= BOOK_MAX_AGE_SECONDS:
+            return cached
         if self.paper_mode and not self.market_data_live:
-            return self._paper_default_book(symbol)
-        d=await request_json("GET",self.REST+"/v5/market/orderbook",params={"category":"spot","symbol":symbol,"limit":50}); self._ok(d); r=d["result"]
-        ob={"symbol":symbol,"bids":[[float(x[0]),float(x[1])] for x in r["b"]],"asks":[[float(x[0]),float(x[1])] for x in r["a"]],"timestamp":time.time(),"source":"rest"}; self.orderbooks[symbol]=ob; return ob
+            return cached or self._paper_default_book(symbol)
+        # A stale cached WebSocket book must not permanently disable REST
+        # fallback; rate-limit refreshes while the scanner runs continuously.
+        if now-self._last_rest_refresh.get(symbol,0.0) < 0.75:
+            return cached or {"symbol":symbol,"bids":[],"asks":[],"timestamp":0.0,"source":"unavailable"}
+        self._last_rest_refresh[symbol]=now
+        try:
+            d=await request_json("GET",self.REST+"/v5/market/orderbook",params={"category":"spot","symbol":symbol,"limit":50})
+            self._ok(d)
+            r=d["result"]
+            ob={"symbol":symbol,"bids":[[float(x[0]),float(x[1])] for x in r["b"]],"asks":[[float(x[0]),float(x[1])] for x in r["a"]],"timestamp":time.time(),"source":"rest"}
+            self.orderbooks[symbol]=ob
+            return ob
+        except Exception:
+            if cached:
+                return cached
+            raise
     async def create_order(self,symbol,side,amount,price,client_order_id=None):
         if self.paper_mode:return await self._paper_order(symbol,side,amount,price,client_order_id)
         self._require(); cid=client_order_id or f"arb_{uuid.uuid4().hex[:20]}"; body={"category":"spot","symbol":symbol.upper(),"side":side.capitalize(),"orderType":"Limit","qty":self._fmt(amount),"price":self._fmt(price),"timeInForce":"IOC","orderLinkId":cid}
@@ -40,12 +72,26 @@ class BybitExchange(BaseExchange):
             if client_order_id in self.orders:return self.orders[client_order_id]
             if order_id in self.orders:return self.orders[order_id]
             return {"order_id":order_id,"client_order_id":client_order_id,"status":"UNKNOWN","filled_amount":0.0,"remaining_amount":0.0,"avg_price":0.0,"timestamp":time.time()}
-        self._require(); p={"category":"spot","symbol":symbol.upper()};
-        if order_id:p["orderId"]=order_id
-        elif client_order_id:p["orderLinkId"]=client_order_id
-        d=await request_json("GET",self.REST+"/v5/order/realtime",params=p,headers=self._headers("GET","/v5/order/realtime",p)); self._ok(d); lst=d["result"].get("list",[])
-        if not lst:return {"order_id":order_id,"client_order_id":client_order_id,"status":"UNKNOWN","filled_amount":0.0,"remaining_amount":0.0,"avg_price":0.0,"timestamp":time.time()}
-        x=lst[0]; return self._normalize(x,symbol)
+        self._require()
+        params={"category":"spot","symbol":symbol.upper()}
+        if order_id:params["orderId"]=order_id
+        elif client_order_id:params["orderLinkId"]=client_order_id
+
+        # IOC orders may disappear from the realtime list as soon as they finish.
+        # Query order history before reporting UNKNOWN, otherwise a confirmed fill
+        # can be mistaken for a failed order and its exposure left unmanaged.
+        endpoint="/v5/order/realtime"
+        data=await request_json("GET",self.REST+endpoint,params=params,headers=self._headers("GET",endpoint,params))
+        self._ok(data)
+        orders=data.get("result",{}).get("list",[])
+        if not orders:
+            endpoint="/v5/order/history"
+            data=await request_json("GET",self.REST+endpoint,params=params,headers=self._headers("GET",endpoint,params))
+            self._ok(data)
+            orders=data.get("result",{}).get("list",[])
+        if not orders:
+            return {"order_id":order_id,"client_order_id":client_order_id,"status":"UNKNOWN","filled_amount":0.0,"remaining_amount":0.0,"avg_price":0.0,"timestamp":time.time()}
+        return self._normalize(orders[0],symbol)
     async def cancel_order(self,symbol,order_id=None,client_order_id=None):
         if self.paper_mode:
             key=client_order_id or order_id
@@ -66,7 +112,7 @@ class BybitExchange(BaseExchange):
             filled+=take; notional+=take*p; rem-=take
             if rem<=1e-12: break
         status="REJECTED" if filled<=0 else ("FILLED" if rem<=1e-12 else "PARTIALLY_FILLED"); avg=notional/filled if filled else 0.0
-        fee_rate=0.001; fee=notional*fee_rate; base=symbol.upper().replace("USDT","") if symbol.upper().endswith("USDT") else symbol.upper(); quote="USDT" if symbol.upper().endswith("USDT") else None
+        fee_rate=EXCHANGE_FEES["bybit"]["taker"]; fee=notional*fee_rate; base=symbol.upper().replace("USDT","") if symbol.upper().endswith("USDT") else symbol.upper(); quote="USDT" if symbol.upper().endswith("USDT") else None
         if status!="REJECTED" and quote:
             if side=="buy":
                 required=notional+fee

@@ -58,7 +58,7 @@ async def opportunities(symbol: str = Query(default=None), capital_usd: float = 
 @router.get('/api/opportunities/live')
 async def live_opportunities():
     rt = get_runtime()
-    return {'opportunities': rt.engine.last_opportunities, 'updated_at': rt.engine.last_scan_at}
+    return {'opportunities': rt.engine.last_opportunities, 'updated_at': rt.engine.last_scan_at, 'diagnostics': rt.scanner.diagnostics_by_symbol}
 
 
 @router.post('/api/trade')

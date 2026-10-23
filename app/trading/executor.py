@@ -5,7 +5,7 @@ from app.trading.positions import PositionManager
 from app.recovery.engine import RecoveryEngine
 from app.safety.engine import SafetyEngine
 from app.portfolio.inventory import InventoryManager
-from app.arbitrage.profitability import calculate_net_profit
+from app.arbitrage.profitability import calculate_net_profit, calculate_realized_profit
 from app.config import LIVE_TRADING
 
 logger = logging.getLogger("TradeExecutor")
@@ -73,31 +73,43 @@ class TradeExecutor:
         buy_order_res = await self.order_manager.create_order(buy_ex, symbol, "buy", quantity, buy_price)
         buy_status = buy_order_res.get("status", "UNKNOWN")
         bought_filled = float(buy_order_res.get("filled_amount", 0.0) or 0.0)
-        if buy_status == "UNKNOWN":
-            checked_buy = await self.order_manager.check_order_status_with_timeout(buy_ex, symbol, buy_order_res.get("order_id"), buy_order_res.get("client_order_id"))
-            buy_status = checked_buy.get("status", "UNKNOWN")
-            bought_filled = float(checked_buy.get("filled_amount", 0.0) or 0.0)
+        if buy_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
+            checked_buy = await self.order_manager.resolve_order(buy_ex, symbol, buy_order_res)
             buy_order_res = {**buy_order_res, **checked_buy}
-        if buy_status == "UNKNOWN":
+            buy_status = str(buy_order_res.get("status", "UNKNOWN")).upper()
+            bought_filled = float(buy_order_res.get("filled_amount", 0.0) or 0.0)
+        if buy_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             self.position_manager.set_position_status(position_id, "UNRESOLVED")
-            return {"status": "UNRESOLVED", "reason": "Buy order status is UNKNOWN.", "buy_order": buy_order_res}
-        if buy_status in {"REJECTED", "CANCELED", "EXPIRED"} or bought_filled <= 0:
+            return {
+                "status": "UNRESOLVED",
+                "reason": "Buy order remains unconfirmed after status checks and cancellation attempt; no second order was submitted.",
+                "buy_order": buy_order_res,
+            }
+        # A canceled/expired IOC order can still have a confirmed partial fill.
+        # Process that filled quantity rather than discarding the resulting exposure.
+        if buy_status == "REJECTED" or bought_filled <= 0:
             self.position_manager.set_position_status(position_id, buy_status)
-            return {"status": "FAILED", "reason": f"Buy order failed with status {buy_status}", "buy_order": buy_order_res}
+            return {"status": "FAILED", "reason": f"Buy order has no confirmed fill (status {buy_status})", "buy_order": buy_order_res}
 
         self.position_manager.update_leg_fill(position_id, "buy", bought_filled, buy_order_res.get("avg_price", buy_price))
         sell_order_res = await self.order_manager.create_order(sell_ex, symbol, "sell", bought_filled, sell_price)
         sell_status = sell_order_res.get("status", "UNKNOWN")
         sold_filled = float(sell_order_res.get("filled_amount", 0.0) or 0.0)
-        if sell_status == "UNKNOWN":
-            checked_sell = await self.order_manager.check_order_status_with_timeout(sell_ex, symbol, sell_order_res.get("order_id"), sell_order_res.get("client_order_id"))
-            sell_status = checked_sell.get("status", "UNKNOWN")
-            sold_filled = float(checked_sell.get("filled_amount", 0.0) or 0.0)
+        if sell_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
+            checked_sell = await self.order_manager.resolve_order(sell_ex, symbol, sell_order_res)
             sell_order_res = {**sell_order_res, **checked_sell}
-        if sell_status == "UNKNOWN":
+            sell_status = str(sell_order_res.get("status", "UNKNOWN")).upper()
+            sold_filled = float(sell_order_res.get("filled_amount", 0.0) or 0.0)
+        if sell_status in {"UNKNOWN", "SUBMITTED", "NEW"}:
             self.position_manager.set_position_status(position_id, "UNRESOLVED")
-            recovery_result = await self.recovery_engine.handle_exposure(position_id, buy_ex, symbol, bought_filled, "buy")
-            return {"status": "UNRESOLVED", "reason": "Sell order status UNKNOWN", "recovery": recovery_result, "sell_order": sell_order_res}
+            # Do not place a recovery order while the original sell might still fill.
+            # That could oversell inventory if the exchange later confirms execution.
+            return {
+                "status": "UNRESOLVED",
+                "reason": "Sell order remains unconfirmed after status checks and cancellation attempt; exposure requires manual reconciliation.",
+                "sell_order": sell_order_res,
+                "buy_order": buy_order_res,
+            }
 
         self.position_manager.update_leg_fill(position_id, "sell", sold_filled, sell_order_res.get("avg_price", sell_price))
         if sold_filled < bought_filled:
@@ -105,15 +117,35 @@ class TradeExecutor:
             recovery_result = await self.recovery_engine.handle_exposure(position_id, buy_ex, symbol, bought_filled - sold_filled, "buy")
             return {"status": "PARTIAL_RECOVERY", "sold_filled": sold_filled, "recovery": recovery_result}
 
-        pnl_calc = calculate_net_profit(
-            buy_exchange=buy_ex,
-            sell_exchange=sell_ex,
-            buy_price=float(buy_order_res.get("avg_price", buy_price)),
-            sell_price=float(sell_order_res.get("avg_price", sell_price)),
-            volume=sold_filled,
-            slippage_pct=0.0,
-            other_costs_usd=float(opportunity.get("other_costs_usd", 0.0)),
-        )
+        realized_buy_fee = buy_order_res.get("fee_usd")
+        realized_sell_fee = sell_order_res.get("fee_usd")
+        realized_buy_price = float(buy_order_res.get("avg_price", buy_price))
+        realized_sell_price = float(sell_order_res.get("avg_price", sell_price))
+        other_costs = float(opportunity.get("other_costs_usd", 0.0))
+        if realized_buy_fee is not None and realized_sell_fee is not None:
+            # PAPER adapters report the fees actually deducted from each fill.
+            # Use those values rather than re-estimating from a configured rate.
+            pnl_calc = calculate_realized_profit(
+                buy_price=realized_buy_price,
+                sell_price=realized_sell_price,
+                volume=sold_filled,
+                buy_fee_usd=float(realized_buy_fee),
+                sell_fee_usd=float(realized_sell_fee),
+                other_costs_usd=other_costs,
+            )
+        else:
+            # Some LIVE exchange responses do not include execution fees. Until
+            # fee history is confirmed, label this as an estimate, not realized.
+            pnl_calc = calculate_net_profit(
+                buy_exchange=buy_ex,
+                sell_exchange=sell_ex,
+                buy_price=realized_buy_price,
+                sell_price=realized_sell_price,
+                volume=sold_filled,
+                slippage_pct=0.0,
+                other_costs_usd=other_costs,
+            )
+            pnl_calc["fee_source"] = "configured_estimate"
         net_pnl = pnl_calc["net_profit_usd"]
         if net_pnl < 0:
             self.safety_engine.record_loss(-net_pnl)
