@@ -90,7 +90,14 @@ class RecoveryEngine:
                 "reason": str(exc),
             }
 
-        order = dict(order or {})
+        if not isinstance(order, dict):
+            return {
+                "position_id": position_id,
+                "status": "UNRESOLVED",
+                "filled_amount": 0.0,
+                "reason": "Recovery order response is not an object",
+            }
+        order = dict(order)
         order.setdefault("client_order_id", client_order_id)
 
         def read_fill(result, fallback=0.0):
@@ -176,14 +183,30 @@ class RecoveryEngine:
             except Exception as exc:
                 logger.warning("Recovery final status check failed: %s", exc)
 
-        if filled >= amount - 1e-9 and status == "FILLED":
+        if status == "FILLED":
+            if filled >= amount - 1e-9:
+                return {
+                    "position_id": position_id,
+                    "status": "RECOVERED",
+                    "filled_amount": filled,
+                    "closing_order": order,
+                }
             return {
                 "position_id": position_id,
-                "status": "RECOVERED",
+                "status": "UNRESOLVED",
                 "filled_amount": filled,
+                "reason": "Recovery order reported FILLED without confirming the full requested amount",
                 "closing_order": order,
             }
         if filled > 0 and status in TERMINAL:
+            if filled >= amount - 1e-9:
+                return {
+                    "position_id": position_id,
+                    "status": "UNRESOLVED",
+                    "filled_amount": filled,
+                    "reason": f"Recovery reports a full fill but terminal status is {status}, not FILLED",
+                    "closing_order": order,
+                }
             return {
                 "position_id": position_id,
                 "status": "PARTIAL_RECOVERY",
