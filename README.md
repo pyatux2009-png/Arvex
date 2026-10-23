@@ -6,7 +6,7 @@ This repository is the backend foundation for a spot inter-exchange arbitrage bo
 
 - Binance Spot REST market data and authenticated order endpoints.
 - Bybit V5 Spot REST market data and authenticated order endpoints.
-- Binance and Bybit public WebSocket order-book streams with REST fallback.
+- Binance, Bybit, OKX and Kraken public WebSocket order-book streams with REST fallback.
 - Read-only OKX and Kraken Spot order-book discovery; these venues are not enabled for execution.
 - Bybit snapshot/delta order-book merge.
 - Depth-aware VWAP and concrete trade-size profitability.
