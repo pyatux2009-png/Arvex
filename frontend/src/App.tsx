@@ -36,6 +36,7 @@ type Status = {
   mode: string
   live_trading: boolean
   auto_execute: boolean
+  emergency_stop: boolean
   symbols: string[]
   max_trade_size_usd: number
   engine: {
@@ -142,6 +143,27 @@ function App() {
     } finally { setLoading(false) }
   }
 
+  async function toggleEmergencyStop() {
+    const enabled = !Boolean(status?.emergency_stop)
+    const message = enabled
+      ? 'Включить аварийный стоп? Новые сделки будут заблокированы. Уже открытые ордера автоматически не закрываются.'
+      : 'Снять аварийный стоп? После этого снова будут разрешены новые сделки при прохождении проверок безопасности.'
+    if (!window.confirm(message)) return
+    setLoading(true)
+    try {
+      const response = await fetch(`${API}/api/emergency-stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Не удалось изменить аварийный стоп')
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Не удалось изменить аварийный стоп')
+    } finally { setLoading(false) }
+  }
+
   async function toggleEngine() {
     setLoading(true)
     try {
@@ -181,7 +203,8 @@ function App() {
         <button className="icon-btn mobile-menu" onClick={() => setMobileOpen(v => !v)}><Menu size={20}/></button>
         <div><div className="eyebrow">ARVEX / {page.toUpperCase()}</div><h1>{menu.find(x => x.id === page)?.label}</h1></div>
         <div className="top-actions">
-          <div className="live-indicator"><span className={`live-dot ${error || !status?.engine?.running ? 'idle' : ''}`}/>{error ? 'Нет соединения' : status?.engine?.running ? 'Мониторинг активен' : 'Мониторинг остановлен'}</div>
+          <div className={`live-indicator ${status?.emergency_stop ? 'emergency-active' : ''}`}>{status?.emergency_stop ? 'АВАРИЙНЫЙ СТОП' : error ? 'Нет соединения' : status?.engine?.running ? 'Мониторинг активен' : 'Мониторинг остановлен'}</div>
+          <button className={`emergency-btn ${status?.emergency_stop ? 'active' : ''}`} onClick={toggleEmergencyStop} disabled={loading} title="Блокировать новые сделки">{status?.emergency_stop ? 'Снять стоп' : 'Аварийный стоп'}</button>
           <button className="icon-btn" onClick={refresh} title="Обновить"><RefreshCw size={18}/></button>
         </div>
       </header>

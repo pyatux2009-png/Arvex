@@ -23,6 +23,8 @@ class TradingEngine:
         self.interval_seconds = max(0.05, float(interval_seconds))
         self.cooldown_seconds = max(0.0, float(cooldown_seconds))
         self.auto_execute = bool(auto_execute)
+        # Set by Runtime from persistent safety state; blocks auto execution.
+        self.emergency_stop = False
         self.running = False
         self.task: Optional[asyncio.Task] = None
         self.last_scan_at = 0.0
@@ -68,7 +70,8 @@ class TradingEngine:
         while self.running:
             try:
                 opportunities = await self.scan_once()
-                if self.auto_execute and opportunities and time.time() - self.last_execution_at >= self.cooldown_seconds:
+                if (self.auto_execute and not self.emergency_stop and opportunities
+                        and time.time() - self.last_execution_at >= self.cooldown_seconds):
                     for opportunity in opportunities:
                         if opportunity.get("risk_level") == "BLOCKED":
                             continue
@@ -95,6 +98,7 @@ class TradingEngine:
         return {
             "running": self.running,
             "auto_execute": self.auto_execute,
+            "emergency_stop": self.emergency_stop,
             "symbols": self.symbols,
             "capital_usd": self.capital_usd,
             "last_scan_at": self.last_scan_at,

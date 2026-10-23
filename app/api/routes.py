@@ -7,6 +7,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from app.models.schemas import HealthCheckResponse
 from app.config import settings
 from app.runtime import get_runtime
+from app.operations import set_emergency_stop
 
 router = APIRouter()
 
@@ -38,6 +39,7 @@ async def get_status():
         'auto_execute': rt.engine.auto_execute,
         'symbols': list(settings.symbols),
         'max_trade_size_usd': settings.max_trade_size_usd,
+        'emergency_stop': rt.engine.emergency_stop,
         'engine': rt.engine.status(),
     }
 
@@ -56,6 +58,27 @@ async def stop_engine(x_api_token: str | None = Header(default=None)):
     rt = get_runtime()
     await rt.stop()
     return {'status': 'stopped', 'engine': rt.engine.status()}
+
+
+@router.post('/api/emergency-stop')
+async def emergency_stop(payload: dict, x_api_token: str | None = Header(default=None)):
+    _require_live_api_token(x_api_token)
+    if not isinstance(payload, dict) or not isinstance(payload.get('enabled'), bool):
+        raise HTTPException(400, 'enabled must be a boolean')
+    rt = get_runtime()
+    try:
+        state = set_emergency_stop(payload['enabled'])
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    rt.engine.emergency_stop = state['emergency_stop']
+    return {
+        **state,
+        'message': (
+            'Emergency stop enabled: new executions are blocked. Check open orders and positions manually.'
+            if state['emergency_stop']
+            else 'Emergency stop cleared. Normal safety checks still apply.'
+        ),
+    }
 
 
 @router.get('/api/opportunities')
@@ -85,6 +108,8 @@ async def execute_trade(opportunity: dict, x_api_token: str | None = Header(defa
     rt = get_runtime()
 
     _require_live_api_token(x_api_token)
+    if rt.engine.emergency_stop:
+        raise HTTPException(423, 'Emergency stop is enabled; new trades are blocked.')
 
     symbol = str(opportunity.get('symbol', '')).upper()
     buy_exchange = str(opportunity.get('buy_exchange', '')).lower()

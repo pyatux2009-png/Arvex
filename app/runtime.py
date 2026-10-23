@@ -8,6 +8,7 @@ from app.marketdata.scanner import MarketScanner
 from app.marketdata.manager import MarketDataManager
 from app.trading.executor import TradeExecutor
 from app.trading.engine import TradingEngine
+from app.operations import emergency_stop_enabled
 
 
 class Runtime:
@@ -49,6 +50,7 @@ class Runtime:
             cooldown_seconds=float(os.getenv("TRADE_COOLDOWN_SECONDS", "2.0")),
             auto_execute=auto_execute,
         )
+        self.engine.emergency_stop = emergency_stop_enabled()
         self.started = False
 
     async def start(self):
