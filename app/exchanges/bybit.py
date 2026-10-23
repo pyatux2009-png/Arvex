@@ -10,6 +10,34 @@ class BybitExchange(BaseExchange):
         self.api_key=api_key or os.getenv("BYBIT_API_KEY"); self.api_secret=api_secret or os.getenv("BYBIT_API_SECRET"); self.paper_mode=paper_mode; self.testnet=testnet; self.market_data_live=market_data_live
         if testnet:self.REST="https://api-testnet.bybit.com"
         self.orderbooks={}; self.orders={}; self._last_rest_refresh={}; self.balances={"USDT":10000.0,"BTC":1.0,"ETH":10.0} if paper_mode else {}
+        self._market_rules = {}
+
+    async def get_market_rules(self, symbol):
+        """Fetch Bybit spot lot, tick and minimum-notional rules; cache for one hour."""
+        symbol = str(symbol).upper()
+        cached = self._market_rules.get(symbol)
+        if cached and time.time() - cached["timestamp"] < 3600:
+            return cached["rules"]
+        data = await request_json(
+            "GET", self.REST + "/v5/market/instruments-info",
+            params={"category": "spot", "symbol": symbol},
+        )
+        self._ok(data)
+        rows = data.get("result", {}).get("list", [])
+        if not rows:
+            raise ValueError(f"Bybit has no spot market metadata for {symbol}")
+        row = rows[0]
+        lot = row.get("lotSizeFilter", {})
+        price = row.get("priceFilter", {})
+        rules = {
+            "min_qty": float(lot.get("minOrderQty", 0) or 0),
+            "qty_step": float(lot.get("qtyStep", 0) or 0),
+            "tick_size": float(price.get("tickSize", 0) or 0),
+            "min_notional": float(lot.get("minOrderAmt", 0) or 0),
+            "status": row.get("status"),
+        }
+        self._market_rules[symbol] = {"timestamp": time.time(), "rules": rules}
+        return rules
     def _paper_default_book(self,symbol):
         return {"symbol":symbol,"bids":[[99.0,10.0],[98.0,50.0]],"asks":[[100.0,10.0],[101.0,50.0]],"timestamp":time.time(),"source":"paper"}
 
