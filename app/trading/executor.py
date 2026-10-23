@@ -48,6 +48,35 @@ class TradeExecutor:
         buy_ex = self.exchanges[opportunity["buy_exchange"]]
         if buy_cost > MAX_TRADE_SIZE_USD + 1e-9:
             return {"allowed": False, "reason": f"Trade size exceeds configured maximum of ${MAX_TRADE_SIZE_USD:.2f}."}
+        # Validate against live exchange metadata whenever the adapter supports it.
+        # If metadata retrieval fails, fail closed rather than submit an order likely to be rejected.
+        for exchange_name, exchange, price in (
+            (opportunity["buy_exchange"], buy_ex, buy_price),
+            (opportunity["sell_exchange"], sell_ex, float(opportunity.get("sell_price", 0.0))),
+        ):
+            get_rules = getattr(exchange, "get_market_rules", None)
+            if get_rules is None:
+                continue
+            try:
+                rules = await get_rules(symbol)
+            except Exception as exc:
+                return {"allowed": False, "reason": f"Could not verify {exchange_name} market rules: {exc}"}
+            status = str(rules.get("status", "TRADING")).upper()
+            if status not in {"TRADING", "TRADINGSTATUS", "ENABLED"}:
+                return {"allowed": False, "reason": f"{symbol} is not trading on {exchange_name} (status {status})."}
+            min_qty = float(rules.get("min_qty", 0.0) or 0.0)
+            qty_step = float(rules.get("qty_step", 0.0) or 0.0)
+            tick_size = float(rules.get("tick_size", 0.0) or 0.0)
+            min_notional = float(rules.get("min_notional", 0.0) or 0.0)
+            if amount + 1e-12 < min_qty:
+                return {"allowed": False, "reason": f"Quantity is below {exchange_name} minimum quantity {min_qty}."}
+            if qty_step > 0 and not math.isclose(amount / qty_step, round(amount / qty_step), rel_tol=0.0, abs_tol=1e-7):
+                return {"allowed": False, "reason": f"Quantity does not match {exchange_name} quantity step {qty_step}."}
+            if tick_size > 0 and not math.isclose(price / tick_size, round(price / tick_size), rel_tol=0.0, abs_tol=1e-7):
+                return {"allowed": False, "reason": f"Price does not match {exchange_name} tick size {tick_size}."}
+            if min_notional > 0 and amount * price + 1e-9 < min_notional:
+                return {"allowed": False, "reason": f"Order value is below {exchange_name} minimum notional {min_notional}."}
+
         buy_bal = await buy_ex.get_balance()
         sell_bal = await sell_ex.get_balance()
         if quote and float(buy_bal.get(quote, 0.0)) + 1e-9 < buy_cost + buy_fee:
