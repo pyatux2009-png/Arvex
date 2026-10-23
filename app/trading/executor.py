@@ -210,7 +210,10 @@ class TradeExecutor:
     async def execute_arbitrage(self, opportunity: dict) -> dict:
         if not isinstance(opportunity, dict):
             return {"status": "BLOCKED", "reason": "Opportunity must be an object."}
-        if LIVE_TRADING and self.mode == "LIVE":
+        # Enforce the executor's own mode as well as global configuration.
+        # This prevents a directly constructed LIVE executor from bypassing the
+        # token gate when the module was imported while TRADING_MODE=PAPER.
+        if str(self.mode).upper() == "LIVE":
             if not os.getenv("LIVE_API_TOKEN", "").strip():
                 return {"status": "BLOCKED", "reason": "LIVE_API_TOKEN is required before any LIVE order can be submitted."}
             for ex_name in (opportunity.get("buy_exchange"), opportunity.get("sell_exchange")):
