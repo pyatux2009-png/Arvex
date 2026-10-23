@@ -11,6 +11,17 @@ from app.runtime import get_runtime
 router = APIRouter()
 
 
+def _require_live_api_token(x_api_token: str | None) -> None:
+    """Protect mutating API routes whenever the backend is configured for LIVE."""
+    if not settings.live_trading:
+        return
+    configured_token = os.getenv('LIVE_API_TOKEN', '').strip()
+    if not configured_token:
+        raise HTTPException(503, 'LIVE trading is disabled until LIVE_API_TOKEN is configured.')
+    if not x_api_token or not hmac.compare_digest(x_api_token, configured_token):
+        raise HTTPException(401, 'Valid X-API-Token header required for LIVE trading.')
+
+
 @router.get('/api/health', response_model=HealthCheckResponse)
 async def health_check():
     return HealthCheckResponse(status='healthy', mode=settings.trading_mode, timestamp=datetime.now(timezone.utc))
@@ -32,14 +43,16 @@ async def get_status():
 
 
 @router.post('/api/engine/start')
-async def start_engine():
+async def start_engine(x_api_token: str | None = Header(default=None)):
+    _require_live_api_token(x_api_token)
     rt = get_runtime()
     await rt.start()
     return {'status': 'started', 'engine': rt.engine.status()}
 
 
 @router.post('/api/engine/stop')
-async def stop_engine():
+async def stop_engine(x_api_token: str | None = Header(default=None)):
+    _require_live_api_token(x_api_token)
     rt = get_runtime()
     await rt.stop()
     return {'status': 'stopped', 'engine': rt.engine.status()}
@@ -71,14 +84,7 @@ async def live_opportunities():
 async def execute_trade(opportunity: dict, x_api_token: str | None = Header(default=None)):
     rt = get_runtime()
 
-    # Live trading is fail-closed: it requires a separately configured secret.
-    # PAPER mode remains usable locally without a token.
-    if settings.live_trading:
-        configured_token = os.getenv('LIVE_API_TOKEN', '').strip()
-        if not configured_token:
-            raise HTTPException(503, 'LIVE trading is disabled until LIVE_API_TOKEN is configured.')
-        if not x_api_token or not hmac.compare_digest(x_api_token, configured_token):
-            raise HTTPException(401, 'Valid X-API-Token header required for LIVE trading.')
+    _require_live_api_token(x_api_token)
 
     symbol = str(opportunity.get('symbol', '')).upper()
     buy_exchange = str(opportunity.get('buy_exchange', '')).lower()
@@ -125,7 +131,8 @@ async def get_settings():
 
 
 @router.post('/api/settings/capital')
-async def set_capital(payload: dict):
+async def set_capital(payload: dict, x_api_token: str | None = Header(default=None)):
+    _require_live_api_token(x_api_token)
     rt = get_runtime()
     try:
         capital = float(payload.get('capital_usd'))
