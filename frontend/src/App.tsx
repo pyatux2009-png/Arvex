@@ -159,7 +159,7 @@ function App() {
     <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
       <div className="brand">
         <div className="brand-mark"><Zap size={20} fill="currentColor" /></div>
-        <div><b>ArbX</b><span>Crypto Arbitrage</span></div>
+        <div><b>Arvex</b><span>SPOT ARBITRAGE</span></div>
       </div>
       <div className="side-section-title">РАБОЧАЯ ОБЛАСТЬ</div>
       <nav>
@@ -179,7 +179,7 @@ function App() {
     <main className="main">
       <header className="topbar">
         <button className="icon-btn mobile-menu" onClick={() => setMobileOpen(v => !v)}><Menu size={20}/></button>
-        <div><div className="eyebrow">ARBX / {page.toUpperCase()}</div><h1>{menu.find(x => x.id === page)?.label}</h1></div>
+        <div><div className="eyebrow">ARVEX / {page.toUpperCase()}</div><h1>{menu.find(x => x.id === page)?.label}</h1></div>
         <div className="top-actions">
           <div className="live-indicator"><span className="live-dot"/> Сканер</div>
           <button className="icon-btn" onClick={refresh} title="Обновить"><RefreshCw size={18}/></button>
