@@ -18,7 +18,7 @@ The default scanner universe contains 24 USDT spot pairs: BTC, ETH, SOL, BNB, XR
 - Safety Engine with size, loss, profit, liquidity and stale-book limits.
 - Manual trade endpoint re-scans server-side and does not trust client-supplied PnL, prices, quantity, liquidity or risk fields.
 - Binance/Bybit execution preflight checks cached market status, quantity step, minimum quantity/notional and price tick rules; metadata errors block execution.
-- LIVE order submission fails closed unless `LIVE_API_TOKEN` is configured; manual LIVE requests must send it as `X-API-Token`.
+- LIVE order submission fails closed unless `LIVE_API_TOKEN` is configured; manual LIVE requests must send it as `X-API-Token`. Engine start/stop and capital-setting mutations also require this token in LIVE mode.
 - Continuous `TradingEngine` scanner/executor loop.
 - Optional automatic execution controlled by `AUTO_EXECUTE`.
 - Strict order-state handling: unknown execution is never treated as filled.
