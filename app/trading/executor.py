@@ -9,6 +9,8 @@ from app.arbitrage.profitability import calculate_net_profit, calculate_realized
 from app.config import LIVE_TRADING, EXCHANGE_FEES, MAX_TRADE_SIZE_USD
 import math
 import os
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from math import gcd
 
 logger = logging.getLogger("TradeExecutor")
 
@@ -29,6 +31,102 @@ class TradeExecutor:
         if symbol.endswith("USDT"):
             return symbol[:-4], "USDT"
         return symbol, None
+
+    @staticmethod
+    def _common_quantity_step(step_a: float, step_b: float) -> Decimal:
+        """Return the smallest quantity increment compatible with both decimal steps."""
+        a, b = Decimal(str(step_a or 0)), Decimal(str(step_b or 0))
+        if a <= 0:
+            return b
+        if b <= 0:
+            return a
+        places = max(0, -a.as_tuple().exponent, -b.as_tuple().exponent)
+        scale = 10 ** places
+        ai, bi = int(a * scale), int(b * scale)
+        if ai <= 0 or bi <= 0:
+            return max(a, b)
+        return Decimal((ai * bi) // gcd(ai, bi)) / Decimal(scale)
+
+    @staticmethod
+    def _round_price_to_tick(price: float, tick: float, *, round_up: bool) -> float:
+        value = Decimal(str(price))
+        increment = Decimal(str(tick or 0))
+        if increment <= 0:
+            return float(value)
+        rounding = ROUND_CEILING if round_up else ROUND_FLOOR
+        units = (value / increment).to_integral_value(rounding=rounding)
+        return float(units * increment)
+
+    async def _prepare_execution_opportunity(self, opportunity: dict) -> dict:
+        """Normalize IOC limit prices and quantity, then recompute net economics."""
+        prepared = dict(opportunity)
+        buy_name = str(prepared.get("buy_exchange", "")).lower()
+        sell_name = str(prepared.get("sell_exchange", "")).lower()
+        buy_ex, sell_ex = self.exchanges.get(buy_name), self.exchanges.get(sell_name)
+        if not buy_ex or not sell_ex:
+            return {"allowed": False, "reason": "Execution exchange adapter is unavailable."}
+
+        try:
+            quantity = Decimal(str(prepared.get("quantity")))
+            buy_price = float(prepared.get("buy_order_price", prepared.get("buy_price")))
+            sell_price = float(prepared.get("sell_order_price", prepared.get("sell_price")))
+            if not quantity.is_finite() or quantity <= 0 or not math.isfinite(buy_price) or not math.isfinite(sell_price) or buy_price <= 0 or sell_price <= 0:
+                raise ValueError("Quantity and IOC limit prices must be finite and positive.")
+        except (TypeError, ValueError, ArithmeticError) as exc:
+            return {"allowed": False, "reason": f"Invalid IOC order inputs: {exc}"}
+
+        rules_by_exchange = {}
+        for name, exchange in ((buy_name, buy_ex), (sell_name, sell_ex)):
+            get_rules = getattr(exchange, "get_market_rules", None)
+            if get_rules is None:
+                rules_by_exchange[name] = {}
+                continue
+            try:
+                rules = await get_rules(str(prepared.get("symbol", "")).upper())
+                if not isinstance(rules, dict):
+                    raise ValueError("market rules response is not an object")
+                rules_by_exchange[name] = rules
+            except Exception as exc:
+                return {"allowed": False, "reason": f"Could not verify {name} market rules: {exc}"}
+
+        buy_rules, sell_rules = rules_by_exchange[buy_name], rules_by_exchange[sell_name]
+        common_step = self._common_quantity_step(
+            float(buy_rules.get("qty_step", 0) or 0),
+            float(sell_rules.get("qty_step", 0) or 0),
+        )
+        if common_step > 0:
+            quantity = (quantity / common_step).to_integral_value(rounding=ROUND_FLOOR) * common_step
+        if quantity <= 0:
+            return {"allowed": False, "reason": "Quantity rounds down to zero at the exchanges' compatible quantity step."}
+
+        buy_price = self._round_price_to_tick(buy_price, float(buy_rules.get("tick_size", 0) or 0), round_up=True)
+        sell_price = self._round_price_to_tick(sell_price, float(sell_rules.get("tick_size", 0) or 0), round_up=False)
+        if not math.isfinite(buy_price) or not math.isfinite(sell_price) or buy_price <= 0 or sell_price <= 0:
+            return {"allowed": False, "reason": "Normalized IOC limit prices are invalid."}
+
+        try:
+            metrics = calculate_net_profit(
+                buy_exchange=buy_name,
+                sell_exchange=sell_name,
+                buy_price=buy_price,
+                sell_price=sell_price,
+                volume=float(quantity),
+                slippage_pct=float(prepared.get("slippage_pct", 0.05)),
+                other_costs_usd=float(prepared.get("other_costs_usd", 0.0)),
+            )
+        except (TypeError, ValueError, KeyError, ArithmeticError) as exc:
+            return {"allowed": False, "reason": f"Could not recalculate economics at IOC limits: {exc}"}
+        if not math.isfinite(metrics["net_profit_usd"]) or metrics["net_profit_usd"] <= 0:
+            return {"allowed": False, "reason": "Net profit is non-positive after IOC tick rounding, fees, slippage and other costs."}
+
+        prepared.update(metrics)
+        prepared["quantity"] = float(quantity)
+        prepared["buy_price"] = buy_price
+        prepared["sell_price"] = sell_price
+        prepared["buy_order_price"] = buy_price
+        prepared["sell_order_price"] = sell_price
+        prepared["position_size"] = float(quantity) * buy_price
+        return {"allowed": True, "opportunity": prepared}
 
     async def _preflight_balances(self, opportunity: dict) -> dict:
         symbol = opportunity["symbol"]
@@ -105,6 +203,12 @@ class TradeExecutor:
             return {"status": "BLOCKED", "reason": "Route must use two distinct execution-enabled exchanges."}
         if opportunity.get("execution_supported") is False:
             return {"status": "BLOCKED", "reason": "This route is discovery-only and cannot be executed."}
+
+        prepared = await self._prepare_execution_opportunity(opportunity)
+        if not prepared.get("allowed"):
+            return {"status": "BLOCKED", "reason": prepared.get("reason", "IOC preflight failed.")}
+        opportunity = prepared["opportunity"]
+
         try:
             sell_price_check = float(opportunity.get("sell_price"))
             expected_net = float(opportunity.get("net_profit_usd"))
