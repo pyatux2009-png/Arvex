@@ -176,7 +176,7 @@ class RecoveryEngine:
             except Exception as exc:
                 logger.warning("Recovery final status check failed: %s", exc)
 
-        if filled >= amount - 1e-9 and status in TERMINAL:
+        if filled >= amount - 1e-9 and status == "FILLED":
             return {
                 "position_id": position_id,
                 "status": "RECOVERED",
