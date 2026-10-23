@@ -44,3 +44,33 @@ def test_paper_mode_does_not_require_live_api_token(monkeypatch):
     monkeypatch.delenv("LIVE_API_TOKEN", raising=False)
 
     routes._require_live_api_token(None)
+
+
+
+@pytest.mark.asyncio
+async def test_executor_live_mode_requires_token_even_when_module_default_is_paper(monkeypatch):
+    from app.trading import executor as executor_module
+
+    class Exchange:
+        paper_mode = False
+        api_key = "test-key"
+
+    monkeypatch.setattr(executor_module, "LIVE_TRADING", False)
+    monkeypatch.delenv("LIVE_API_TOKEN", raising=False)
+    executor = executor_module.TradeExecutor(
+        {"binance": Exchange(), "bybit": Exchange()},
+        mode="LIVE",
+    )
+
+    result = await executor.execute_arbitrage({
+        "symbol": "BTCUSDT",
+        "buy_exchange": "binance",
+        "sell_exchange": "bybit",
+        "quantity": 0.01,
+        "buy_price": 100.0,
+        "sell_price": 102.0,
+        "net_profit_usd": 0.1,
+    })
+
+    assert result["status"] == "BLOCKED"
+    assert "LIVE_API_TOKEN" in result["reason"]
