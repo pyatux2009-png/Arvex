@@ -181,7 +181,7 @@ function App() {
         <button className="icon-btn mobile-menu" onClick={() => setMobileOpen(v => !v)}><Menu size={20}/></button>
         <div><div className="eyebrow">ARVEX / {page.toUpperCase()}</div><h1>{menu.find(x => x.id === page)?.label}</h1></div>
         <div className="top-actions">
-          <div className="live-indicator"><span className="live-dot"/> Сканер</div>
+          <div className="live-indicator"><span className={`live-dot ${error || !status?.engine?.running ? 'idle' : ''}`}/>{error ? 'Нет соединения' : status?.engine?.running ? 'Мониторинг активен' : 'Мониторинг остановлен'}</div>
           <button className="icon-btn" onClick={refresh} title="Обновить"><RefreshCw size={18}/></button>
         </div>
       </header>
