@@ -1,4 +1,6 @@
-# Crypto Arbitrage Bot — backend
+# Arvex — Spot Arbitrage Platform
+
+Arvex is a spot inter-exchange arbitrage research and execution platform.
 
 This repository is the backend foundation for a spot inter-exchange arbitrage bot.
 
