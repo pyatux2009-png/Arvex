@@ -5,7 +5,7 @@ def test_safety_engine_validation():
     engine = SafetyEngine(max_daily_loss=10.0)
     
     # Нормальный безопасный кандидат
-    safe_opp = {"risk_level": "SAFE_CANDIDATE", "net_profit_usd": 1.5}
+    safe_opp = {"risk_level": "SAFE_CANDIDATE", "net_profit_usd": 1.5, "net_profit_pct": 1.5, "slippage_pct": 0.05, "quantity": 0.1, "buy_price": 100.0, "book_age": 0.1, "liquidity_ok": True}
     assert engine.validate_opportunity(safe_opp)["allowed"] is True
 
     # Заблокированный арбитраж
