@@ -134,7 +134,8 @@ class RecoveryEngine:
                             "reason": "Recovery status returned an invalid filled amount",
                             "closing_order": order,
                         }
-                    filled = latest_fill
+                    filled = max(filled, latest_fill)
+                    order["filled_amount"] = filled
                     status = str(order.get("status", "UNKNOWN")).upper()
             except Exception as exc:
                 logger.warning("Recovery status check failed: %s", exc)
@@ -169,7 +170,8 @@ class RecoveryEngine:
                             "reason": "Recovery final status returned an invalid filled amount",
                             "closing_order": order,
                         }
-                    filled = latest_fill
+                    filled = max(filled, latest_fill)
+                    order["filled_amount"] = filled
                     status = str(order.get("status", "UNKNOWN")).upper()
             except Exception as exc:
                 logger.warning("Recovery final status check failed: %s", exc)
