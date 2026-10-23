@@ -55,7 +55,6 @@ async def test_executor_live_mode_requires_token_even_when_module_default_is_pap
         paper_mode = False
         api_key = "test-key"
 
-    monkeypatch.setattr(executor_module, "LIVE_TRADING", False)
     monkeypatch.delenv("LIVE_API_TOKEN", raising=False)
     executor = executor_module.TradeExecutor(
         {"binance": Exchange(), "bybit": Exchange()},
