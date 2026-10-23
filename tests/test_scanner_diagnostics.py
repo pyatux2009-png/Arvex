@@ -102,3 +102,68 @@ async def test_market_data_only_route_is_not_marked_executable():
 
     assert opportunities
     assert opportunities[0]["execution_supported"] is False
+
+
+@pytest.mark.asyncio
+async def test_auto_execute_skips_discovery_only_route():
+    from app.trading.engine import TradingEngine
+
+    class Scanner:
+        async def scan_opportunities(self, symbol, capital):
+            return [{
+                "symbol": symbol, "buy_exchange": "binance", "sell_exchange": "okx",
+                "net_profit_usd": 1.0, "net_profit_pct": 1.0, "risk_level": "NORMAL",
+                "execution_supported": False,
+            }]
+
+    class Executor:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute_arbitrage(self, opportunity):
+            self.calls += 1
+            return {"status": "FILLED"}
+
+    executor = Executor()
+    engine = TradingEngine(Scanner(), executor, ["BTCUSDT"], 50, interval_seconds=0.01, auto_execute=True)
+    await engine.start()
+    await __import__("asyncio").sleep(0.04)
+    await engine.stop()
+
+    assert executor.calls == 0
+    assert engine.execution_count == 0
+
+
+@pytest.mark.asyncio
+async def test_okx_public_adapter_parses_order_book(monkeypatch):
+    from app.exchanges import public_marketdata
+
+    async def fake_request_json(method, url, **kwargs):
+        assert "okx.com" in url
+        assert kwargs["params"]["instId"] == "BTC-USDT"
+        return {"code": "0", "data": [{"bids": [["99.0", "2"]], "asks": [["100.0", "3"]]}]}
+
+    monkeypatch.setattr(public_marketdata, "request_json", fake_request_json)
+    exchange = public_marketdata.OkxMarketDataExchange()
+    book = await exchange.get_order_book("BTCUSDT")
+
+    assert book["bids"] == [[99.0, 2.0]]
+    assert book["asks"] == [[100.0, 3.0]]
+    assert book["source"] == "rest"
+
+
+@pytest.mark.asyncio
+async def test_kraken_public_adapter_parses_order_book(monkeypatch):
+    from app.exchanges import public_marketdata
+
+    async def fake_request_json(method, url, **kwargs):
+        assert "kraken.com" in url
+        return {"error": [], "result": {"XXBTZUSDT": {"bids": [["99.0", "2", 1]], "asks": [["100.0", "3", 1]]}}}
+
+    monkeypatch.setattr(public_marketdata, "request_json", fake_request_json)
+    exchange = public_marketdata.KrakenMarketDataExchange()
+    book = await exchange.get_order_book("BTCUSDT")
+
+    assert book["bids"] == [[99.0, 2.0]]
+    assert book["asks"] == [[100.0, 3.0]]
+    assert book["source"] == "rest"
