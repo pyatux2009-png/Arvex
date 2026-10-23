@@ -6,7 +6,9 @@ from app.recovery.engine import RecoveryEngine
 from app.safety.engine import SafetyEngine
 from app.portfolio.inventory import InventoryManager
 from app.arbitrage.profitability import calculate_net_profit, calculate_realized_profit
-from app.config import LIVE_TRADING
+from app.config import LIVE_TRADING, EXCHANGE_FEES, MAX_TRADE_SIZE_USD
+import math
+import os
 
 logger = logging.getLogger("TradeExecutor")
 
@@ -31,11 +33,21 @@ class TradeExecutor:
     async def _preflight_balances(self, opportunity: dict) -> dict:
         symbol = opportunity["symbol"]
         base, quote = self._assets(symbol)
+        if not quote or quote != "USDT":
+            return {"allowed": False, "reason": "Only USDT-quoted spot symbols are supported for execution."}
         amount = float(opportunity["quantity"])
-        buy_cost = amount * float(opportunity["buy_price"])
-        buy_fee = buy_cost * float(opportunity.get("buy_fee", 0.001))
+        buy_price = float(opportunity["buy_price"])
+        if not all(math.isfinite(value) for value in (amount, buy_price)) or amount <= 0 or buy_price <= 0:
+            return {"allowed": False, "reason": "Quantity and buy price must be finite positive numbers."}
+        buy_cost = amount * buy_price
+        buy_fee_rate = EXCHANGE_FEES.get(opportunity["buy_exchange"], {}).get("taker")
+        if buy_fee_rate is None:
+            return {"allowed": False, "reason": "No configured taker fee for buy exchange."}
+        buy_fee = buy_cost * buy_fee_rate
         sell_ex = self.exchanges[opportunity["sell_exchange"]]
         buy_ex = self.exchanges[opportunity["buy_exchange"]]
+        if buy_cost > MAX_TRADE_SIZE_USD + 1e-9:
+            return {"allowed": False, "reason": f"Trade size exceeds configured maximum of ${MAX_TRADE_SIZE_USD:.2f}."}
         buy_bal = await buy_ex.get_balance()
         sell_bal = await sell_ex.get_balance()
         if quote and float(buy_bal.get(quote, 0.0)) + 1e-9 < buy_cost + buy_fee:
@@ -45,12 +57,25 @@ class TradeExecutor:
         return {"allowed": True, "reason": "OK"}
 
     async def execute_arbitrage(self, opportunity: dict) -> dict:
+        if not isinstance(opportunity, dict):
+            return {"status": "BLOCKED", "reason": "Opportunity must be an object."}
         if LIVE_TRADING and self.mode == "LIVE":
+            if not os.getenv("LIVE_API_TOKEN", "").strip():
+                return {"status": "BLOCKED", "reason": "LIVE_API_TOKEN is required before any LIVE order can be submitted."}
             for ex_name in (opportunity.get("buy_exchange"), opportunity.get("sell_exchange")):
                 ex = self.exchanges.get(ex_name)
                 if not ex or getattr(ex, "paper_mode", True) or not getattr(ex, "api_key", None):
                     return {"status": "BLOCKED", "reason": f"LIVE trading requires valid API credentials for {ex_name}."}
 
+        symbol = str(opportunity.get("symbol", "")).upper()
+        buy_exchange = str(opportunity.get("buy_exchange", "")).lower()
+        sell_exchange = str(opportunity.get("sell_exchange", "")).lower()
+        if not symbol.endswith("USDT") or symbol == "USDT":
+            return {"status": "BLOCKED", "reason": "Only USDT-quoted spot symbols are supported."}
+        if buy_exchange == sell_exchange or buy_exchange not in self.exchanges or sell_exchange not in self.exchanges:
+            return {"status": "BLOCKED", "reason": "Route must use two distinct execution-enabled exchanges."}
+        if opportunity.get("execution_supported") is False:
+            return {"status": "BLOCKED", "reason": "This route is discovery-only and cannot be executed."}
         safety_check = self.safety_engine.validate_opportunity(opportunity)
         if not safety_check.get("allowed", False):
             return {"status": "BLOCKED", "reason": f"Safety check failed: {safety_check.get('reason')}"}
