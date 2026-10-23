@@ -317,3 +317,27 @@ async def test_recovery_reconciles_unknown_submission_by_client_order_id():
     assert result["status"] == "RECOVERED"
     assert result["filled_amount"] == pytest.approx(1.0)
     assert exchange.status_checks == 1
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"status": "FILLED", "filled_amount": float("nan")},
+        {"status": "FILLED", "filled_amount": -0.1},
+        {"status": "FILLED", "filled_amount": 2.0},
+        ["not", "an", "order"],
+    ],
+)
+async def test_order_manager_marks_malformed_exchange_response_unknown(response):
+    class MalformedExchange:
+        async def create_order(self, *args, **kwargs):
+            return response
+
+    manager = OrderManager({"fake": MalformedExchange()})
+    result = await manager.create_order("fake", "BTCUSDT", "buy", 1.0, 100.0, "malformed-1")
+
+    assert result["status"] == "UNKNOWN"
+    assert result["client_order_id"] == "malformed-1"
+    assert "reconciliation" in result["reason"].lower()
