@@ -1,7 +1,9 @@
 import os
+
 from app.config import settings
 from app.exchanges.binance import BinanceExchange
 from app.exchanges.bybit import BybitExchange
+from app.exchanges.public_marketdata import KrakenMarketDataExchange, OkxMarketDataExchange
 from app.marketdata.scanner import MarketScanner
 from app.marketdata.manager import MarketDataManager
 from app.trading.executor import TradeExecutor
@@ -11,15 +13,33 @@ from app.trading.engine import TradingEngine
 class Runtime:
     def __init__(self):
         paper = settings.trading_mode != "LIVE"
-        self.exchanges = {
-            "binance": BinanceExchange(paper_mode=paper, testnet=settings.binance_testnet, market_data_live=True),
-            "bybit": BybitExchange(paper_mode=paper, testnet=settings.bybit_testnet, market_data_live=True),
+        # Only these adapters can ever be passed to the executor.
+        self.trade_exchanges = {
+            "binance": BinanceExchange(
+                paper_mode=paper, testnet=settings.binance_testnet, market_data_live=True
+            ),
+            "bybit": BybitExchange(
+                paper_mode=paper, testnet=settings.bybit_testnet, market_data_live=True
+            ),
         }
-        self.scanner = MarketScanner(self.exchanges)
-        self.executor = TradeExecutor(self.exchanges, mode=settings.trading_mode)
-        self.streams = MarketDataManager(self.exchanges, settings.symbols)
+        # OKX/Kraken are read-only discovery venues until their execution,
+        # balances, lot sizes, fees and order lifecycle are independently tested.
+        self.market_exchanges = {
+            **self.trade_exchanges,
+            "okx": OkxMarketDataExchange(),
+            "kraken": KrakenMarketDataExchange(),
+        }
+        self.exchanges = self.trade_exchanges  # compatibility for existing callers
+        self.scanner = MarketScanner(
+            self.market_exchanges,
+            max_book_age_seconds=settings.book_max_age_seconds,
+            estimated_slippage_pct=settings.estimated_slippage_pct,
+            execution_exchanges=self.trade_exchanges.keys(),
+        )
+        self.executor = TradeExecutor(self.trade_exchanges, mode=settings.trading_mode)
+        self.streams = MarketDataManager(self.market_exchanges, settings.symbols)
         auto_execute = os.getenv("AUTO_EXECUTE", "false").strip().lower() in {"1", "true", "yes", "on"}
-        # Live is intentionally opt-in twice: TRADING_MODE=LIVE and AUTO_EXECUTE=true.
+        # Live execution remains opt-in twice and is never enabled by this change.
         self.engine = TradingEngine(
             self.scanner,
             self.executor,
