@@ -103,3 +103,38 @@ tbody tr:hover { background: linear-gradient(90deg, rgba(255, 138, 36, .065), rg
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+
+
+/* Emergency stop is intentionally prominent and distinct from scanner controls. */
+.emergency-btn {
+  border: 1px solid rgba(255, 86, 75, .42);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: #ffaaa2;
+  background: rgba(116, 27, 28, .18);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .2px;
+  white-space: nowrap;
+  transition: background .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.emergency-btn:hover:not(:disabled) {
+  background: rgba(156, 35, 35, .28);
+  border-color: rgba(255, 86, 75, .75);
+  box-shadow: 0 0 18px rgba(255, 70, 60, .12);
+}
+.emergency-btn.active {
+  color: #101014;
+  background: #ff6d64;
+  border-color: #ff6d64;
+  box-shadow: 0 0 20px rgba(255, 70, 60, .2);
+}
+.emergency-btn:disabled { opacity: .55; cursor: wait; }
+.live-indicator.emergency-active {
+  color: #ff9d95;
+  border-color: rgba(255, 86, 75, .38);
+  background: rgba(116, 27, 28, .18);
+}
+@media(max-width: 600px) {
+  .emergency-btn { padding: 8px; font-size: 10px; }
+}
