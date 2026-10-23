@@ -168,3 +168,129 @@ async def test_execution_preserves_configured_other_costs_when_recalculating(mon
 
     assert result["allowed"] is False
     assert "non-positive" in result["reason"]
+
+
+
+@pytest.mark.asyncio
+async def test_normalized_ioc_notional_stays_within_requested_cap():
+    rules = {
+        "status": "TRADING",
+        "min_qty": 0.001,
+        "qty_step": 0.001,
+        "tick_size": 0.1,
+        "min_notional": 0.0,
+    }
+    executor = TradeExecutor({
+        "binance": RulesExchange(rules),
+        "bybit": RulesExchange(rules),
+    }, mode="PAPER")
+
+    result = await executor._prepare_execution_opportunity({
+        "symbol": "BTCUSDT",
+        "buy_exchange": "binance",
+        "sell_exchange": "bybit",
+        "quantity": 1.0,
+        "position_size": 100.0,
+        "buy_price": 100.0,
+        "sell_price": 103.0,
+        "buy_order_price": 100.01,
+        "sell_order_price": 103.09,
+        "slippage_pct": 0.01,
+        "other_costs_usd": 0.0,
+    })
+
+    assert result["allowed"] is True
+    opportunity = result["opportunity"]
+    assert opportunity["buy_price"] == pytest.approx(100.1)
+    assert opportunity["quantity"] == pytest.approx(0.999)
+    assert opportunity["position_size"] <= 100.0
+
+
+@pytest.mark.asyncio
+async def test_partial_buy_fill_is_rounded_to_sell_venue_step_before_hedging():
+    class ExecutionExchange:
+        def __init__(self, name, rules, balances):
+            self.name = name
+            self.rules = rules
+            self.balances = balances
+            self.submissions = []
+            self.paper_mode = True
+
+        async def get_market_rules(self, symbol):
+            return self.rules
+
+        async def get_balance(self):
+            return dict(self.balances)
+
+        async def get_order_book(self, symbol):
+            return {"bids": [[99.0, 10.0]], "asks": [[100.0, 10.0]]}
+
+        async def create_order(self, symbol, side, amount, price, client_order_id=None):
+            self.submissions.append((side, amount, price))
+            if self.name == "binance" and side == "buy":
+                return {
+                    "status": "PARTIALLY_FILLED",
+                    "filled_amount": 0.015,
+                    "avg_price": 100.0,
+                    "client_order_id": client_order_id,
+                }
+            return {
+                "status": "FILLED",
+                "filled_amount": amount,
+                "avg_price": price,
+                "fee_usd": 0.0,
+                "client_order_id": client_order_id,
+            }
+
+        async def get_order_status(self, symbol, order_id=None, client_order_id=None):
+            return {"status": "UNKNOWN", "filled_amount": 0.0}
+
+        async def cancel_order(self, symbol, order_id=None, client_order_id=None):
+            return {"status": "CANCELED"}
+
+    buy_rules = {
+        "status": "TRADING",
+        "min_qty": 0.001,
+        "qty_step": 0.001,
+        "tick_size": 0.01,
+        "min_notional": 0.0,
+    }
+    sell_rules = {
+        "status": "TRADING",
+        "min_qty": 0.001,
+        "qty_step": 0.01,
+        "tick_size": 0.01,
+        "min_notional": 0.0,
+    }
+    binance = ExecutionExchange("binance", buy_rules, {"USDT": 10000.0, "BTC": 0.0})
+    bybit = ExecutionExchange("bybit", sell_rules, {"USDT": 10000.0, "BTC": 10.0})
+    executor = TradeExecutor({"binance": binance, "bybit": bybit}, mode="PAPER")
+    executor.safety_engine.max_position_usd = 100.0
+
+    result = await executor.execute_arbitrage({
+        "symbol": "BTCUSDT",
+        "buy_exchange": "binance",
+        "sell_exchange": "bybit",
+        "quantity": 1.0,
+        "position_size": 100.0,
+        "buy_price": 100.0,
+        "sell_price": 103.0,
+        "buy_order_price": 100.0,
+        "sell_order_price": 103.0,
+        "net_profit_usd": 2.7,
+        "net_profit_pct": 2.7,
+        "slippage_pct": 0.01,
+        "book_age": 0.1,
+        "liquidity_ok": True,
+        "risk_level": "SAFE_CANDIDATE",
+        "execution_supported": True,
+    })
+
+    assert result["status"] == "PARTIAL_RECOVERY"
+    # A 0.015 buy fill cannot be sold as 0.015 on a venue with a 0.01 step.
+    assert bybit.submissions[0][0] == "sell"
+    assert bybit.submissions[0][1] == pytest.approx(0.01)
+    # The unsellable remainder is explicitly sent through recovery on the buy venue.
+    assert binance.submissions[1][0] == "sell"
+    assert binance.submissions[1][1] == pytest.approx(0.005)
+    assert result["recovery"]["status"] == "RECOVERED"
