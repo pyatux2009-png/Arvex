@@ -159,7 +159,6 @@ function App() {
       const data = await response.json()
       if (!response.ok) throw new Error(data.detail || 'Не удалось изменить аварийный стоп')
       await refresh()
-      setError(data.message || '')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Не удалось изменить аварийный стоп')
     } finally { setLoading(false) }
