@@ -167,3 +167,17 @@ async def test_kraken_public_adapter_parses_order_book(monkeypatch):
     assert book["bids"] == [[99.0, 2.0]]
     assert book["asks"] == [[100.0, 3.0]]
     assert book["source"] == "rest"
+
+
+def test_kraken_websocket_book_merge_updates_and_deletes_levels():
+    from app.marketdata.websocket import KrakenOrderBookStream
+
+    snapshot_bids = [{"price": "99", "qty": "2"}, {"price": "98", "qty": "3"}]
+    bids = KrakenOrderBookStream._merge([], snapshot_bids, reverse=True, snapshot=True)
+    updated = KrakenOrderBookStream._merge(
+        bids,
+        [{"price": "99", "qty": "0"}, {"price": "100", "qty": "1"}],
+        reverse=True,
+    )
+
+    assert updated == [[100.0, 1.0], [98.0, 3.0]]
