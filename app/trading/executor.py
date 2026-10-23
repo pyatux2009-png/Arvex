@@ -6,7 +6,7 @@ from app.recovery.engine import RecoveryEngine
 from app.safety.engine import SafetyEngine
 from app.portfolio.inventory import InventoryManager
 from app.arbitrage.profitability import calculate_net_profit, calculate_realized_profit
-from app.config import LIVE_TRADING, EXCHANGE_FEES, MAX_TRADE_SIZE_USD
+from app.config import EXCHANGE_FEES, MAX_TRADE_SIZE_USD
 import math
 import os
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
