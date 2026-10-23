@@ -15,6 +15,7 @@ class BinanceExchange(BaseExchange):
         self.market_data_live = market_data_live
         if testnet: self.REST = "https://testnet.binance.vision"
         self.orderbooks={}; self.orders={}; self._last_rest_refresh={}
+        self.balances={"USDT":10000.0,"BTC":1.0,"ETH":10.0} if paper_mode else {}
         self._market_rules = {}
 
     async def get_market_rules(self, symbol):
@@ -41,7 +42,6 @@ class BinanceExchange(BaseExchange):
         }
         self._market_rules[symbol] = {"timestamp": time.time(), "rules": rules}
         return rules
-        self.balances={"USDT":10000.0,"BTC":1.0,"ETH":10.0} if paper_mode else {}
     def _signed(self, params):
         p=dict(params); p["timestamp"]=int(time.time()*1000); p.setdefault("recvWindow",5000)
         qs=urllib.parse.urlencode(p)
