@@ -97,7 +97,7 @@ async def test_pancakeswap_client_initializes_pair_read_only():
 
     async def fake_eth_call(address, data):
         if address == DEFAULT_FACTORY:
-            assert data.startswith("0xe6a43905")
+            assert data.startswith("e6a43905")
             return "0x" + address_word("0x" + "a" * 40)
         if data == "0x0dfe1681":
             return "0x" + address_word(DEFAULT_WBNB)
@@ -143,7 +143,7 @@ async def test_pancakeswap_snapshot_decodes_reserves():
     client.decimals1 = 18
 
     async def fake_eth_call(address, data):
-        assert data == "0x0902f1ac"
+        assert data == "0902f1ac"
         return "0x" + word(10 * 10**18) + word(3000 * 10**18) + word(123456)
 
     client._eth_call = fake_eth_call
