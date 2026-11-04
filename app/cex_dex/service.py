@@ -9,11 +9,11 @@ from app.cex_dex.pancakeswap_v2 import PancakeSwapV2Client
 class CexDexMarketDataService:
     """Runs read-only Binance and PancakeSwap feeds for PAPER research."""
 
-    def __init__(self, rpc_url: str, symbol: str = "BNBUSDT", dex_poll_seconds: float = 2.0, stale_after_seconds: float = 5.0):
+    def __init__(self, rpc_url: str, symbol: str = "BNBUSDT", dex_poll_seconds: float = 2.0, stale_after_seconds: float = 5.0, dex_fee_bps: int = 25):
         if dex_poll_seconds <= 0 or stale_after_seconds <= 0:
             raise ValueError("poll and stale intervals must be positive")
         self.binance = BinanceBookTickerStream(symbol=symbol)
-        self.dex = PancakeSwapV2Client(rpc_url=rpc_url)
+        self.dex = PancakeSwapV2Client(rpc_url=rpc_url, fee_bps=dex_fee_bps)
         self.dex_poll_seconds = dex_poll_seconds
         self.stale_after_seconds = stale_after_seconds
         self.dex_latest = None
