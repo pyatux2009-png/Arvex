@@ -21,3 +21,6 @@ frontend/tsconfig.tsbuildinfo
 # Editors
 .vscode/
 .idea/
+
+# Local CEX-DEX 30-day market-data capture
+data/cex_dex_marketdata.jsonl
