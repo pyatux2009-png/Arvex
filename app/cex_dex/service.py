@@ -24,9 +24,14 @@ class CexDexMarketDataService:
     async def start(self):
         if self.running:
             return
-        self.running = True
         await self.dex.initialize()
-        await self.binance.start()
+        self.running = True
+        try:
+            await self.binance.start()
+        except Exception:
+            self.running = False
+            await self.dex.close()
+            raise
         self.dex_task = asyncio.create_task(self._poll_dex(), name="pancakeswap-bnbusdt-pool-poller")
 
     async def stop(self):
