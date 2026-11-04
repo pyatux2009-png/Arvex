@@ -2,7 +2,7 @@ name: Python 3.14 compatibility
 
 on:
   push:
-    branches: [main, work/arbitrage-bot-audit, python-3-14-compat, feat/cex-dex-paper-marketdata]
+    branches: [main, work/arbitrage-bot-audit, python-3-14-compat, feat/cex-dex-paper-marketdata, feat/cex-dex-paper-scanner]
   pull_request:
   workflow_dispatch:
 

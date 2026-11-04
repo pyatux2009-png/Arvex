@@ -45,7 +45,11 @@ Install dependencies and run:
 .\.venv\Scripts\python.exe run_cex_dex_marketdata.py
 ```
 
-The runner prints Binance top-of-book and PancakeSwap pool-reserve freshness and appends timestamped samples to `data/cex_dex_marketdata.jsonl` (configurable with `CEX_DEX_LOG_PATH`). It is a data monitor only, not a trading executor. Stop it with Ctrl+C.
+The runner prints Binance top-of-book and PancakeSwap pool-reserve freshness, calculates both PAPER routes for each configured USDT quote size, and appends timestamped market data plus opportunity estimates to `data/cex_dex_marketdata.jsonl` (configurable with `CEX_DEX_LOG_PATH`).
+
+Scanner settings: `CEX_DEX_QUOTE_SIZES_USDT=10,25,50,100`, `CEX_DEX_BINANCE_FEE_BPS=10` (example taker-fee assumption; set this to your actual account tier), and `CEX_DEX_ESTIMATED_GAS_USDT=0.05` (configurable per-route estimate). Each quote includes CEX fee, PancakeSwap V2 fee, constant-product price impact, estimated gas, net P/L and a top-of-book quantity check. Because the Binance feed is bookTicker rather than full depth, a quote is marked non-executable at top-of-book if the requested BNB quantity exceeds the displayed best-level quantity. This is still an estimate, not a guaranteed fill.
+
+This remains a read-only PAPER scanner, not a trading executor. Stop it with Ctrl+C.
 
 ## Windows quick start (existing dashboard)
 ```powershell
