@@ -21,12 +21,14 @@ async def main():
     rpc_url = os.getenv("CEX_DEX_BSC_RPC_URL", "https://bsc-dataseed.binance.org")
     poll_seconds = float(os.getenv("CEX_DEX_MARKETDATA_POLL_SECONDS", "2"))
     stale_seconds = float(os.getenv("CEX_DEX_STALE_AFTER_SECONDS", "5"))
+    dex_fee_bps = int(os.getenv("CEX_DEX_PANCAKE_V2_FEE_BPS", "25"))
 
     service = CexDexMarketDataService(
         rpc_url=rpc_url,
         symbol=symbol,
         dex_poll_seconds=poll_seconds,
         stale_after_seconds=stale_seconds,
+        dex_fee_bps=dex_fee_bps,
     )
     await service.start()
     logger.info("Started read-only CEX-DEX market data in PAPER mode for %s", symbol)
