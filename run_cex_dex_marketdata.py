@@ -43,7 +43,7 @@ async def main():
                 record = {"logged_at": time.time(), **service.status()}
                 line = json.dumps(record, ensure_ascii=False)
                 logger.info("market_data=%s", line)
-                history.write(line + "\\n")
+                history.write(line + "\n")
                 history.flush()
                 await asyncio.sleep(log_interval)
     finally:
