@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -21,6 +23,9 @@ async def main():
     rpc_url = os.getenv("CEX_DEX_BSC_RPC_URL", "https://bsc-dataseed.binance.org")
     poll_seconds = float(os.getenv("CEX_DEX_MARKETDATA_POLL_SECONDS", "2"))
     stale_seconds = float(os.getenv("CEX_DEX_STALE_AFTER_SECONDS", "5"))
+    log_interval = float(os.getenv("CEX_DEX_LOG_INTERVAL_SECONDS", "5"))
+    log_path = Path(os.getenv("CEX_DEX_LOG_PATH", "data/cex_dex_marketdata.jsonl"))
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     dex_fee_bps = int(os.getenv("CEX_DEX_PANCAKE_V2_FEE_BPS", "25"))
 
     service = CexDexMarketDataService(
@@ -33,9 +38,14 @@ async def main():
     await service.start()
     logger.info("Started read-only CEX-DEX market data in PAPER mode for %s", symbol)
     try:
-        while True:
-            logger.info("market_data=%s", json.dumps(service.status(), ensure_ascii=False))
-            await asyncio.sleep(5)
+        with log_path.open("a", encoding="utf-8") as history:
+            while True:
+                record = {"logged_at": time.time(), **service.status()}
+                line = json.dumps(record, ensure_ascii=False)
+                logger.info("market_data=%s", line)
+                history.write(line + "\\n")
+                history.flush()
+                await asyncio.sleep(log_interval)
     finally:
         await service.stop()
 
