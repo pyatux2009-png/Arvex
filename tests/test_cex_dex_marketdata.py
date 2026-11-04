@@ -161,3 +161,14 @@ def test_market_data_status_is_explicitly_paper_and_wallet_disconnected():
     assert status["wallet_connected"] is False
     assert status["orders_enabled"] is False
     assert status["transactions_enabled"] is False
+
+
+def test_dex_pool_price_is_normalized_to_usdt_per_bnb_for_both_token_orders():
+    from app.cex_dex.service import CexDexMarketDataService
+
+    bnb_first = DexPoolSnapshot(56, "0x" + "1" * 40, DEFAULT_WBNB, DEFAULT_USDT,
+                                Decimal("10"), Decimal("3000"), 18, 18, 25, 1, 1.0)
+    usdt_first = DexPoolSnapshot(56, "0x" + "1" * 40, DEFAULT_USDT, DEFAULT_WBNB,
+                                 Decimal("3000"), Decimal("10"), 18, 18, 25, 1, 1.0)
+    assert CexDexMarketDataService._pool_price_usdt_per_bnb(bnb_first) == "300"
+    assert CexDexMarketDataService._pool_price_usdt_per_bnb(usdt_first) == "300"
