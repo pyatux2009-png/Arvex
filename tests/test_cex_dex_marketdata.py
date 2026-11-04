@@ -99,9 +99,9 @@ async def test_pancakeswap_client_initializes_pair_read_only():
         if address == DEFAULT_FACTORY:
             assert data.startswith("e6a43905")
             return "0x" + address_word("0x" + "a" * 40)
-        if data == "0x0dfe1681":
+        if data == "0dfe1681":
             return "0x" + address_word(DEFAULT_WBNB)
-        if data == "0xd21220a7":
+        if data == "d21220a7":
             return "0x" + address_word(DEFAULT_USDT)
         if address.lower() == DEFAULT_WBNB.lower():
             return "0x" + word(18)
