@@ -3,7 +3,7 @@ import time
 from typing import Optional
 
 from app.cex_dex.binance_stream import BinanceBookTickerStream
-from app.cex_dex.pancakeswap_v2 import PancakeSwapV2Client
+from app.cex_dex.pancakeswap_v2 import DEFAULT_USDT, DEFAULT_WBNB, PancakeSwapV2Client
 
 
 class CexDexMarketDataService:
@@ -57,6 +57,16 @@ class CexDexMarketDataService:
                 self.dex_error = str(exc)
             await asyncio.sleep(self.dex_poll_seconds)
 
+    @staticmethod
+    def _pool_price_usdt_per_bnb(dex):
+        if dex is None:
+            return None
+        if dex.token0.lower() == DEFAULT_WBNB.lower() and dex.token1.lower() == DEFAULT_USDT.lower():
+            return str(dex.reserve1 / dex.reserve0)
+        if dex.token1.lower() == DEFAULT_WBNB.lower() and dex.token0.lower() == DEFAULT_USDT.lower():
+            return str(dex.reserve0 / dex.reserve1)
+        return None
+
     def status(self, now: Optional[float] = None) -> dict:
         now = time.time() if now is None else now
         cex = self.binance.latest
@@ -77,6 +87,9 @@ class CexDexMarketDataService:
                 "connected_data": dex is not None and dex_age <= self.stale_after_seconds,
                 "age_seconds": dex_age,
                 "pair_address": None if dex is None else dex.pair_address,
+                "token0": None if dex is None else dex.token0,
+                "token1": None if dex is None else dex.token1,
+                "pool_price_usdt_per_bnb": self._pool_price_usdt_per_bnb(dex),
                 "reserve0": None if dex is None else str(dex.reserve0),
                 "reserve1": None if dex is None else str(dex.reserve1),
                 "fee_bps": None if dex is None else dex.fee_bps,
