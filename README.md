@@ -20,7 +20,8 @@ The branch `feat/cex-dex-paper-marketdata` adds a separate, read-only CEX-DEX ma
 - PancakeSwap V2 BNB Chain pair discovery through the factory contract.
 - Read-only BNB Chain JSON-RPC calls for pair tokens, decimals and reserves.
 - Constant-product exact-input quote math with a configurable pool fee (default 25 bps).
-- Data freshness/status reporting.
+- Data freshness/status reporting, including a normalized DEX BNB/USDT pool mid-price.
+- Append-only JSONL market-data capture for the 30-day PAPER observation window.
 - No Trust Wallet connection, private keys, token approvals, signed transactions, exchange orders or withdrawals.
 
 The first CEX-DEX phase uses PancakeSwap V2 deliberately. V3 concentrated-liquidity quoting will be a separate implementation after the V2 feed and tests are validated.
@@ -44,7 +45,7 @@ Install dependencies and run:
 .\.venv\Scripts\python.exe run_cex_dex_marketdata.py
 ```
 
-The runner prints Binance top-of-book and PancakeSwap pool-reserve freshness. It is a data monitor only, not a trading executor. Stop it with Ctrl+C.
+The runner prints Binance top-of-book and PancakeSwap pool-reserve freshness and appends timestamped samples to `data/cex_dex_marketdata.jsonl` (configurable with `CEX_DEX_LOG_PATH`). It is a data monitor only, not a trading executor. Stop it with Ctrl+C.
 
 ## Windows quick start (existing dashboard)
 ```powershell
